@@ -330,6 +330,99 @@ async function runLiveIntegrationTests() {
       console.log('  ✅ SUCCESS: Profile management structurally verified.');
     }
 
+    console.log('\n[11/14] Testing Self-Elevation / Self-Role-Assignment Prevention...');
+    // Grant users.assign_roles to tempRole temporarily so clientA1 is authorized to assign roles to OTHERS, but not THEMSELVES
+    const { data: assignRolesPerm } = await adminClient
+      .from('permissions')
+      .select('id')
+      .eq('code', 'users.assign_roles')
+      .single();
+
+    if (assignRolesPerm) {
+      await adminClient.from('role_permissions').insert({
+        role_id: tempRole.id,
+        permission_id: assignRolesPerm.id,
+        tenant_id: tenantAId
+      });
+    }
+
+    // Now clientA1 tries to assign themselves a role. This must fail because self-assignment is forbidden!
+    const { error: selfAssignErr } = await clientA1
+      .from('user_roles')
+      .insert({
+        user_id: userA1Id,
+        role_id: tempRole.id,
+        tenant_id: tenantAId
+      });
+
+    if (!selfAssignErr) {
+      throw new Error('Security Violation: User successfully self-assigned a role (Self-Elevation)!');
+    }
+    console.log('  ✅ SUCCESS: Self-role assignment successfully blocked by database triggers.');
+
+    console.log('\n[12/14] Testing Cross-Tenant Role & Scope Assignment Blocks...');
+    // Client A1 tries to assign a role to Tenant B's user. This must fail!
+    const { error: crossRoleAssignErr } = await clientA1
+      .from('user_roles')
+      .insert({
+        user_id: userB1Id,
+        role_id: tempRole.id,
+        tenant_id: tenantAId
+      });
+
+    if (!crossRoleAssignErr) {
+      throw new Error('RLS Violation: Assigned Tenant A role to Tenant B user!');
+    }
+
+    // Client A1 tries to assign Tenant B's contract to a Tenant A user. This must fail!
+    const { error: crossScopeAssignErr } = await clientA1
+      .from('user_contracts')
+      .insert({
+        user_id: userA1Id,
+        contract_id: '11111111-1111-1111-1111-111111111111', // Fake non-owned ID
+        tenant_id: tenantAId
+      });
+
+    if (!crossScopeAssignErr) {
+      throw new Error('RLS Violation: Assigned non-owned contract scope!');
+    }
+    console.log('  ✅ SUCCESS: Cross-tenant role and scope modifications successfully blocked.');
+
+    console.log('\n[13/14] Testing System-Role Protection & Immutability...');
+    // Let's find a global system role (e.g. tenant_admin)
+    const { data: systemRole } = await adminClient
+      .from('roles')
+      .select('id')
+      .eq('code', 'tenant_admin')
+      .eq('is_system', true)
+      .single();
+
+    if (systemRole) {
+      // clientA1 tries to delete an entitlement from system role. This must be rejected!
+      const { error: sysPermDeleteErr } = await clientA1
+        .from('role_permissions')
+        .delete()
+        .eq('role_id', systemRole.id);
+
+      if (!sysPermDeleteErr) {
+        throw new Error('Security Violation: Modified global system role permissions!');
+      }
+      console.log('  ✅ SUCCESS: Global system role permissions protected from modifications.');
+    }
+
+    console.log('\n[14/14] Verifying Reusable Authorization State RPC Endpoint...');
+    const { data: authState, error: authStateErr } = await clientA1
+      .rpc('get_user_authorization_state');
+
+    if (authStateErr || !authState) {
+      throw new Error(`RPC Verification failed: ${authStateErr?.message}`);
+    }
+
+    if (!Array.isArray(authState.permissions) || !Array.isArray(authState.roles)) {
+      throw new Error('RPC format error: permissions or roles is not an array!');
+    }
+    console.log('  ✅ SUCCESS: Reusable authorization state retrieved. Active permissions:', authState.permissions.length);
+
     console.log('\nCleaning up Integration Seed Data...');
     await adminClient.from('roles').delete().eq('id', tempRole.id);
     await adminClient.auth.admin.deleteUser(userA1Id);

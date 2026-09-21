@@ -22,14 +22,347 @@ import {
   Info
 } from 'lucide-react';
 import { SCHEMA_TABLES } from '../data/architecture-specs';
+import ToolBuilder from './ToolBuilder';
 
-type ActiveTab = 'overview' | 'team' | 'architecture' | 'rls';
+type ActiveTab = 'overview' | 'team' | 'roles' | 'tools' | 'rls' | 'architecture';
 
 export default function DocsPortal() {
-  const { profile, tenant, loading, error, refreshProfile, signOut } = useAuth();
+  const { profile, tenant, loading, error, refreshProfile, signOut, hasPermission, hasOperationalScope } = useAuth();
 
   // Navigation and active states
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
+
+  // NEW Phase 3 Authorization & Scope UI states
+  const [selectedUser, setSelectedUser] = useState<any | null>(null);
+  const [allRoles, setAllRoles] = useState<any[]>([]);
+  const [allPermissions, setAllPermissions] = useState<any[]>([]);
+  const [rolePermissionsMap, setRolePermissionsMap] = useState<Record<string, string[]>>({});
+  
+  // Selected user's active assignments
+  const [userRoles, setUserRoles] = useState<any[]>([]);
+  const [userContracts, setUserContracts] = useState<any[]>([]);
+  const [userSites, setUserSites] = useState<any[]>([]);
+  
+  // Assignment form / action states
+  const [assignRoleLoading, setAssignRoleLoading] = useState(false);
+  const [assignScopeLoading, setAssignScopeLoading] = useState(false);
+  const [statusLoading, setStatusLoading] = useState(false);
+  
+  // Role Creation / Permission edit states
+  const [selectedRole, setSelectedRole] = useState<any | null>(null);
+  const [newRoleName, setNewRoleName] = useState('');
+  const [newRoleCode, setNewRoleCode] = useState('');
+  const [newRoleDesc, setNewRoleDesc] = useState('');
+  const [roleCreateError, setRoleCreateError] = useState<string | null>(null);
+  const [roleCreateSuccess, setRoleCreateSuccess] = useState<string | null>(null);
+  const [editRolePermsLoading, setEditRolePermsLoading] = useState(false);
+
+  // Fetch active assignments for the selected user
+  const fetchUserAssignments = async (userId: string) => {
+    try {
+      const { data: urJoinData } = await supabase
+        .from('user_roles')
+        .select(`
+          id,
+          role_id,
+          roles (
+            id,
+            name,
+            code,
+            is_system
+          )
+        `)
+        .eq('user_id', userId);
+
+      const { data: ucJoinData } = await supabase
+        .from('user_contracts')
+        .select(`
+          id,
+          contract_id,
+          contracts (
+            id,
+            name,
+            code
+          )
+        `)
+        .eq('user_id', userId);
+
+      const { data: usJoinData } = await supabase
+        .from('user_sites')
+        .select(`
+          id,
+          site_id,
+          sites (
+            id,
+            name,
+            code
+          )
+        `)
+        .eq('user_id', userId);
+
+      setUserRoles(urJoinData || []);
+      setUserContracts(ucJoinData || []);
+      setUserSites(usJoinData || []);
+    } catch (err) {
+      console.error('Error fetching user assignments:', err);
+    }
+  };
+
+  // Fetch all roles, permissions and maps
+  const fetchRBACMetadata = async () => {
+    try {
+      const { data: rolesData } = await supabase
+        .from('roles')
+        .select('*')
+        .order('name');
+      setAllRoles(rolesData || []);
+
+      const { data: permsData } = await supabase
+        .from('permissions')
+        .select('*')
+        .order('category', { ascending: true })
+        .order('code', { ascending: true });
+      setAllPermissions(permsData || []);
+
+      const { data: rpData } = await supabase
+        .from('role_permissions')
+        .select('role_id, permission_id, permissions(code)');
+      
+      const rMap: Record<string, string[]> = {};
+      rpData?.forEach(item => {
+        if (!rMap[item.role_id]) {
+          rMap[item.role_id] = [];
+        }
+        const code = (item.permissions as any)?.code;
+        if (code) {
+          rMap[item.role_id].push(code);
+        }
+      });
+      setRolePermissionsMap(rMap);
+    } catch (err) {
+      console.error('Error fetching RBAC metadata:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (profile?.tenant_id && (activeTab === 'team' || activeTab === 'roles')) {
+      fetchRBACMetadata();
+    }
+  }, [profile?.tenant_id, activeTab]);
+
+  useEffect(() => {
+    if (selectedUser) {
+      fetchUserAssignments(selectedUser.id);
+    }
+  }, [selectedUser]);
+
+  const handleCreateRole = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRoleCreateError(null);
+    setRoleCreateSuccess(null);
+
+    if (!profile?.tenant_id) return;
+
+    try {
+      const { data, error: insError } = await supabase
+        .from('roles')
+        .insert({
+          tenant_id: profile.tenant_id,
+          name: newRoleName,
+          code: newRoleCode.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+          description: newRoleDesc,
+          is_system: false
+        })
+        .select()
+        .single();
+
+      if (insError) throw insError;
+
+      setRoleCreateSuccess(`Role "${newRoleName}" created successfully!`);
+      setNewRoleName('');
+      setNewRoleCode('');
+      setNewRoleDesc('');
+      await fetchRBACMetadata();
+      if (data) {
+        setSelectedRole(data);
+      }
+    } catch (err) {
+      setRoleCreateError((err as Error).message);
+    }
+  };
+
+  const handleDeleteRole = async (roleId: string) => {
+    if (!window.confirm('Are you sure you want to delete this role? This will revoke it from all assigned users.')) return;
+    try {
+      const { error } = await supabase
+        .from('roles')
+        .delete()
+        .eq('id', roleId);
+      if (error) throw error;
+      setSelectedRole(null);
+      await fetchRBACMetadata();
+    } catch (err) {
+      alert(`Error deleting role: ${(err as Error).message}`);
+    }
+  };
+
+  const handleTogglePermission = async (roleId: string, permissionId: string, hasPerm: boolean) => {
+    setEditRolePermsLoading(true);
+    try {
+      if (hasPerm) {
+        const { error } = await supabase
+          .from('role_permissions')
+          .delete()
+          .eq('role_id', roleId)
+          .eq('permission_id', permissionId);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('role_permissions')
+          .insert({
+            role_id: roleId,
+            permission_id: permissionId
+          });
+        if (error) throw error;
+      }
+      await fetchRBACMetadata();
+    } catch (err) {
+      console.error('Error toggling permission:', err);
+      alert(`Permission modification failed: ${(err as Error).message}`);
+    } finally {
+      setEditRolePermsLoading(false);
+    }
+  };
+
+  const handleAssignUserRole = async (roleId: string) => {
+    if (!selectedUser || !profile?.tenant_id) return;
+    setAssignRoleLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_roles')
+        .insert({
+          user_id: selectedUser.id,
+          role_id: roleId,
+          tenant_id: profile.tenant_id
+        });
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Role assignment failed: ${(err as Error).message}`);
+    } finally {
+      setAssignRoleLoading(false);
+    }
+  };
+
+  const handleRemoveUserRole = async (userRoleId: string) => {
+    if (!selectedUser) return;
+    setAssignRoleLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_roles')
+        .delete()
+        .eq('id', userRoleId);
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Role removal failed: ${(err as Error).message}`);
+    } finally {
+      setAssignRoleLoading(false);
+    }
+  };
+
+  const handleAssignUserContract = async (contractId: string) => {
+    if (!selectedUser || !profile?.tenant_id) return;
+    setAssignScopeLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_contracts')
+        .insert({
+          user_id: selectedUser.id,
+          contract_id: contractId,
+          tenant_id: profile.tenant_id
+        });
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Scope assignment failed: ${(err as Error).message}`);
+    } finally {
+      setAssignScopeLoading(false);
+    }
+  };
+
+  const handleRemoveUserContract = async (userContractId: string) => {
+    if (!selectedUser) return;
+    setAssignScopeLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_contracts')
+        .delete()
+        .eq('id', userContractId);
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Scope removal failed: ${(err as Error).message}`);
+    } finally {
+      setAssignScopeLoading(false);
+    }
+  };
+
+  const handleAssignUserSite = async (siteId: string) => {
+    if (!selectedUser || !profile?.tenant_id) return;
+    setAssignScopeLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_sites')
+        .insert({
+          user_id: selectedUser.id,
+          site_id: siteId,
+          tenant_id: profile.tenant_id
+        });
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Scope assignment failed: ${(err as Error).message}`);
+    } finally {
+      setAssignScopeLoading(false);
+    }
+  };
+
+  const handleRemoveUserSite = async (userSiteId: string) => {
+    if (!selectedUser) return;
+    setAssignScopeLoading(true);
+    try {
+      const { error } = await supabase
+        .from('user_sites')
+        .delete()
+        .eq('id', userSiteId);
+      if (error) throw error;
+      await fetchUserAssignments(selectedUser.id);
+    } catch (err) {
+      alert(`Scope removal failed: ${(err as Error).message}`);
+    } finally {
+      setAssignScopeLoading(false);
+    }
+  };
+
+  const handleChangeUserStatus = async (status: 'active' | 'suspended') => {
+    if (!selectedUser) return;
+    setStatusLoading(true);
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ status })
+        .eq('id', selectedUser.id);
+      if (error) throw error;
+      
+      setSelectedUser((prev: any) => prev ? { ...prev, status } : null);
+      await fetchTenantData();
+    } catch (err) {
+      alert(`Status modification failed: ${(err as Error).message}`);
+    } finally {
+      setStatusLoading(false);
+    }
+  };
 
   // Tenant Setup (Bootstrap) Form States
   const [bootstrapOrgName, setBootstrapOrgName] = useState('');
@@ -395,6 +728,8 @@ export default function DocsPortal() {
             {[
               { id: 'overview', label: 'Tenant Overview', icon: Building2 },
               { id: 'team', label: 'Team & Invitations', icon: Users },
+              { id: 'roles', label: 'Roles & Permissions', icon: Lock },
+              { id: 'tools', label: 'Tool Builder', icon: Layers },
               { id: 'rls', label: 'Database Security', icon: ShieldCheck },
               { id: 'architecture', label: 'Architecture Specifications', icon: FileText }
             ].map(tab => {
@@ -637,107 +972,582 @@ export default function DocsPortal() {
                   <p className="text-xs text-slate-400 py-2">Loading users...</p>
                 ) : (
                   <div className="divide-y divide-slate-100">
-                    {teamProfiles.map((userProfile) => (
-                      <div key={userProfile.id} className="py-4 flex justify-between items-start text-xs">
-                        <div className="space-y-1">
-                          <div className="flex items-center space-x-2">
-                            <p className="font-semibold text-slate-900">{userProfile.full_name}</p>
-                            {userProfile.is_platform_admin && (
-                              <span className="px-1.5 py-0.5 text-[8px] bg-red-100 text-red-800 rounded font-bold uppercase">
-                                Platform Admin
+                    {teamProfiles.map((userProfile) => {
+                      const isSelected = selectedUser?.id === userProfile.id;
+                      return (
+                        <div
+                          key={userProfile.id}
+                          onClick={() => setSelectedUser(userProfile)}
+                          className={`py-4 px-3 flex justify-between items-start text-xs rounded-lg cursor-pointer transition-all ${
+                            isSelected
+                              ? 'bg-slate-50 border-l-2 border-slate-900 shadow-3xs'
+                              : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center space-x-2">
+                              <p className={`font-semibold ${isSelected ? 'text-slate-900 text-sm' : 'text-slate-750'}`}>
+                                {userProfile.full_name}
+                              </p>
+                              {userProfile.is_platform_admin && (
+                                <span className="px-1.5 py-0.5 text-[8px] bg-red-100 text-red-800 rounded font-bold uppercase">
+                                  Platform Admin
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-500">{userProfile.email}</p>
+                            <p className="text-[10px] text-slate-400 font-mono">ID: {userProfile.id}</p>
+                          </div>
+                          <div className="flex flex-col items-end space-y-1.5">
+                            <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
+                              userProfile.status === 'active'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : userProfile.status === 'invited'
+                                ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                : 'bg-red-50 text-red-800 border-red-200'
+                            }`}>
+                              {userProfile.status}
+                            </span>
+                            {userProfile.invited_at && (
+                              <span className="text-[8px] text-slate-400">
+                                Invited: {new Date(userProfile.invited_at).toLocaleDateString()}
                               </span>
                             )}
                           </div>
-                          <p className="text-[10px] text-slate-500">{userProfile.email}</p>
-                          <p className="text-[10px] text-slate-400 font-mono">ID: {userProfile.id}</p>
                         </div>
-                        <div className="flex flex-col items-end space-y-1.5">
-                          <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-full border ${
-                            userProfile.status === 'active'
-                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                              : userProfile.status === 'invited'
-                              ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                              : 'bg-red-50 text-red-800 border-red-200'
-                          }`}>
-                            {userProfile.status}
-                          </span>
-                          {userProfile.invited_at && (
-                            <span className="text-[8px] text-slate-400">
-                              Invited: {new Date(userProfile.invited_at).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
             </div>
 
-            {/* Right Column - Send Invitation Form */}
+            {/* Right Column - Send Invitation Form OR Manage Selected User */}
             <div className="space-y-6">
               
-              <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5 text-xs text-indigo-900 space-y-2">
-                <div className="flex items-center space-x-2">
-                  <UserPlus className="w-4 h-4 text-indigo-600" />
-                  <span className="font-bold">Invitation Flow Verification</span>
+              {selectedUser ? (
+                /* Manage Selected User */
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-5">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Manage Member</span>
+                      <h3 className="text-sm font-bold text-slate-900">{selectedUser.full_name}</h3>
+                    </div>
+                    <button
+                      onClick={() => setSelectedUser(null)}
+                      className="px-2 py-1 text-[10px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-md transition-colors"
+                    >
+                      Invite Form →
+                    </button>
+                  </div>
+
+                  {/* 1. Account Status (Requires users.manage_status) */}
+                  <div className="space-y-2 border-b border-slate-100 pb-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Account Status</span>
+                      <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${
+                        selectedUser.status === 'active'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}>
+                        {selectedUser.status}
+                      </span>
+                    </div>
+
+                    {hasPermission('users.manage_status') ? (
+                      <div className="flex space-x-2">
+                        {selectedUser.status === 'active' ? (
+                          <button
+                            onClick={() => handleChangeUserStatus('suspended')}
+                            disabled={statusLoading}
+                            className="w-full py-1.5 text-center text-[10px] font-bold text-red-700 hover:text-red-800 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 transition-colors cursor-pointer"
+                          >
+                            {statusLoading ? 'Processing...' : 'Suspend Account'}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleChangeUserStatus('active')}
+                            disabled={statusLoading}
+                            className="w-full py-1.5 text-center text-[10px] font-bold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors cursor-pointer"
+                          >
+                            {statusLoading ? 'Processing...' : 'Activate Account'}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-slate-400 italic">Requires users.manage_status to edit.</p>
+                    )}
+                  </div>
+
+                  {/* 2. Functional Roles (Requires users.assign_roles) */}
+                  <div className="space-y-3 border-b border-slate-100 pb-4">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Functional Roles</span>
+                    
+                    {/* Assigned Roles List */}
+                    {userRoles.length === 0 ? (
+                      <p className="text-[10px] text-slate-400 italic">No roles assigned currently.</p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {userRoles.map((ur) => (
+                          <div key={ur.id} className="flex items-center bg-slate-100 border border-slate-200 text-slate-800 rounded px-2 py-1 text-[10px] font-medium">
+                            <span>{(ur.roles as any)?.name}</span>
+                            {hasPermission('users.assign_roles') && (
+                              <button
+                                onClick={() => handleRemoveUserRole(ur.id)}
+                                disabled={assignRoleLoading}
+                                className="ml-1.5 text-red-500 hover:text-red-700 font-bold focus:outline-none"
+                                title="Remove Role"
+                              >
+                                &times;
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Role Assigner Dropdown */}
+                    {hasPermission('users.assign_roles') ? (
+                      <div className="space-y-1.5 pt-1">
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAssignUserRole(e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                          disabled={assignRoleLoading}
+                          className="w-full px-2.5 py-1.5 border border-slate-200 bg-white rounded-lg text-[10px] focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        >
+                          <option value="">+ Assign Functional Role...</option>
+                          {allRoles
+                            .filter(r => !userRoles.some(ur => ur.role_id === r.id))
+                            .map(role => (
+                              <option key={role.id} value={role.id}>
+                                {role.name} {role.is_system ? '(System)' : '(Tenant)'}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-slate-400 italic">Requires users.assign_roles to manage roles.</p>
+                    )}
+                  </div>
+
+                  {/* 3. Operational Scopes (Requires users.assign_scopes) */}
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Operational Boundaries (WHERE)</span>
+                      <p className="text-[9px] text-slate-400 leading-normal">
+                        Contracts and Sites restrict observation access. Users with no boundaries have no access, unless they hold the tenant_admin role.
+                      </p>
+                    </div>
+
+                    {/* Contract Scopes */}
+                    <div className="space-y-2">
+                      <span className="text-[10px] font-semibold text-slate-600 block">Contract Scopes</span>
+                      {userContracts.length === 0 ? (
+                        <p className="text-[10px] text-slate-400 italic">No specific contract scopes assigned.</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {userContracts.map((uc) => (
+                            <div key={uc.id} className="flex items-center bg-blue-50 border border-blue-200 text-blue-800 rounded px-1.5 py-0.5 text-[9px] font-medium">
+                              <span>{(uc.contracts as any)?.name || 'Unknown Contract'}</span>
+                              {hasPermission('users.assign_scopes') && (
+                                <button
+                                  onClick={() => handleRemoveUserContract(uc.id)}
+                                  disabled={assignScopeLoading}
+                                  className="ml-1 text-red-500 hover:text-red-700 font-bold"
+                                >
+                                  &times;
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {hasPermission('users.assign_scopes') ? (
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAssignUserContract(e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                          disabled={assignScopeLoading}
+                          className="w-full px-2.5 py-1 border border-slate-200 bg-white rounded-lg text-[10px] focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        >
+                          <option value="">+ Add Contract Boundary...</option>
+                          {contracts
+                            .filter(c => !userContracts.some(uc => uc.contract_id === c.id))
+                            .map(contract => (
+                              <option key={contract.id} value={contract.id}>
+                                {contract.name} ({contract.code})
+                              </option>
+                            ))}
+                        </select>
+                      ) : (
+                        <p className="text-[10px] text-slate-400 italic">Requires users.assign_scopes to edit.</p>
+                      )}
+                    </div>
+
+                    {/* Site Scopes */}
+                    <div className="space-y-2 pt-1">
+                      <span className="text-[10px] font-semibold text-slate-600 block">Physical Site Scopes</span>
+                      {userSites.length === 0 ? (
+                        <p className="text-[10px] text-slate-400 italic">No specific physical site scopes assigned.</p>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {userSites.map((us) => (
+                            <div key={us.id} className="flex items-center bg-indigo-50 border border-indigo-200 text-indigo-800 rounded px-1.5 py-0.5 text-[9px] font-medium">
+                              <span>{(us.sites as any)?.name || 'Unknown Site'}</span>
+                              {hasPermission('users.assign_scopes') && (
+                                <button
+                                  onClick={() => handleRemoveUserSite(us.id)}
+                                  disabled={assignScopeLoading}
+                                  className="ml-1 text-red-500 hover:text-red-700 font-bold"
+                                >
+                                  &times;
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {hasPermission('users.assign_scopes') ? (
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAssignUserSite(e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                          disabled={assignScopeLoading}
+                          className="w-full px-2.5 py-1 border border-slate-200 bg-white rounded-lg text-[10px] focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        >
+                          <option value="">+ Add Site Boundary...</option>
+                          {sites
+                            .filter(s => !userSites.some(us => us.site_id === s.id))
+                            .map(site => (
+                              <option key={site.id} value={site.id}>
+                                {site.name} ({site.code})
+                              </option>
+                            ))}
+                        </select>
+                      ) : (
+                        <p className="text-[10px] text-slate-400 italic">Requires users.assign_scopes to edit.</p>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <p className="leading-relaxed">
-                  Inviting a user assigns them directly to your tenant's context inside the database. Real deployments trigger email links using Supabase Auth.
-                </p>
+              ) : (
+                /* Send Invitation Form */
+                <>
+                  <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5 text-xs text-indigo-900 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <UserPlus className="w-4 h-4 text-indigo-600" />
+                      <span className="font-bold">Invitation Flow Verification</span>
+                    </div>
+                    <p className="leading-relaxed">
+                      Inviting a user assigns them directly to your tenant's context inside the database. Real deployments trigger email links using Supabase Auth.
+                    </p>
+                    <p className="text-[9px] text-indigo-700 italic">
+                      💡 Click on any user profile on the left to manage their Roles, Scopes, and Status.
+                    </p>
+                  </div>
+
+                  {/* Invite Form */}
+                  <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Invite Team Member</h3>
+                    {inviteError && <p className="text-[10px] text-red-600">{inviteError}</p>}
+                    {inviteSuccess && <p className="text-[10px] text-emerald-600">{inviteSuccess}</p>}
+                    
+                    <form onSubmit={handleInviteUser} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500">Email Address</label>
+                        <input
+                          type="email"
+                          placeholder="colleague@company.com"
+                          value={inviteEmail}
+                          onChange={(e) => setInviteEmail(e.target.value)}
+                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500">Full Name</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Jane Smith"
+                          value={inviteName}
+                          onChange={(e) => setInviteName(e.target.value)}
+                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500">Functional Role</label>
+                        <select
+                          value={inviteRole}
+                          onChange={(e) => setInviteRole(e.target.value)}
+                          className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        >
+                          <option value="observer">Observer (Default Shopfloor)</option>
+                          <option value="site_manager">Site Manager</option>
+                          <option value="contract_manager">Contract Manager</option>
+                          <option value="viewer">Viewer / compliance</option>
+                        </select>
+                      </div>
+                      <button
+                        type="submit"
+                        className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                      >
+                        Send Invitation
+                      </button>
+                    </form>
+                  </div>
+                </>
+              )}
+
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2.5: Role & Permission Management */}
+        {activeTab === 'roles' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            {/* Left Column: Role List & Role Creation */}
+            <div className="space-y-6">
+              
+              {/* Custom Role Creation */}
+              {hasPermission('tenant.manage_settings') || hasPermission('users.assign_roles') ? (
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Create Custom Role</h3>
+                  
+                  {roleCreateError && <p className="text-[10px] text-red-600">{roleCreateError}</p>}
+                  {roleCreateSuccess && <p className="text-[10px] text-emerald-600">{roleCreateSuccess}</p>}
+                  
+                  <form onSubmit={handleCreateRole} className="space-y-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-500">Role Name</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Site Supervisor"
+                        value={newRoleName}
+                        onChange={(e) => {
+                          setNewRoleName(e.target.value);
+                          if (!newRoleCode) {
+                            setNewRoleCode(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+                          }
+                        }}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-500">Role Code</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. site_supervisor"
+                        value={newRoleCode}
+                        onChange={(e) => setNewRoleCode(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '_'))}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-500">Description</label>
+                      <textarea
+                        placeholder="Define operational responsibilities..."
+                        value={newRoleDesc}
+                        onChange={(e) => setNewRoleDesc(e.target.value)}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                        rows={2}
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                    >
+                      Create Custom Role
+                    </button>
+                  </form>
+                </div>
+              ) : (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-xs text-slate-500">
+                  <p className="italic">You do not have the permissions required to create custom roles.</p>
+                </div>
+              )}
+
+              {/* Roles List */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Available Roles</h3>
+                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-slate-100 text-slate-600">
+                    {allRoles.length} Total
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {allRoles.map((role) => {
+                    const isSelected = selectedRole?.id === role.id;
+                    return (
+                      <div
+                        key={role.id}
+                        onClick={() => setSelectedRole(role)}
+                        className={`p-3 rounded-lg border text-xs cursor-pointer transition-all ${
+                          isSelected
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-md'
+                            : 'bg-white border-slate-200 text-slate-850 hover:bg-slate-50'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <p className="font-bold">{role.name}</p>
+                          <span className={`px-1.5 py-0.5 text-[8px] font-bold uppercase rounded ${
+                            role.is_system
+                              ? isSelected ? 'bg-slate-800 text-slate-200' : 'bg-slate-100 text-slate-600'
+                              : isSelected ? 'bg-indigo-900 text-indigo-100' : 'bg-indigo-50 text-indigo-700'
+                          }`}>
+                            {role.is_system ? 'System' : 'Custom'}
+                          </span>
+                        </div>
+                        <p className={`text-[10px] mt-1 line-clamp-2 ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>
+                          {role.description || 'No description provided.'}
+                        </p>
+                        <p className={`text-[9px] font-mono mt-1.5 ${isSelected ? 'text-slate-400' : 'text-slate-400'}`}>
+                          code: {role.code}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
-              {/* Invite Form */}
-              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Invite Team Member</h3>
-                {inviteError && <p className="text-[10px] text-red-600">{inviteError}</p>}
-                {inviteSuccess && <p className="text-[10px] text-emerald-600">{inviteSuccess}</p>}
-                
-                <form onSubmit={handleInviteUser} className="space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Email Address</label>
-                    <input
-                      type="email"
-                      placeholder="colleague@company.com"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
-                      required
-                    />
+            </div>
+
+            {/* Right/Middle Columns: Permissions Matrix & Assigned Users */}
+            <div className="lg:col-span-2 space-y-6">
+              
+              {selectedRole ? (
+                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-2xs space-y-6">
+                  
+                  <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center space-x-2">
+                        <h2 className="text-base font-bold text-slate-900">{selectedRole.name}</h2>
+                        <span className={`px-2 py-0.5 text-[9px] font-bold rounded uppercase ${
+                          selectedRole.is_system ? 'bg-slate-100 text-slate-700' : 'bg-indigo-50 text-indigo-700'
+                        }`}>
+                          {selectedRole.is_system ? 'System Role' : 'Custom Tenant Role'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 leading-relaxed max-w-xl">
+                        {selectedRole.description || 'No responsibilities defined.'}
+                      </p>
+                      <p className="text-[10px] font-mono text-slate-400">UUID: {selectedRole.id}</p>
+                    </div>
+
+                    {!selectedRole.is_system && (hasPermission('tenant.manage_settings') || hasPermission('users.assign_roles')) && (
+                      <button
+                        onClick={() => handleDeleteRole(selectedRole.id)}
+                        className="px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:text-white bg-red-50 hover:bg-red-600 border border-red-200 rounded-lg transition-all cursor-pointer"
+                      >
+                        Delete Role
+                      </button>
+                    )}
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Full Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Jane Smith"
-                      value={inviteName}
-                      onChange={(e) => setInviteName(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
-                      required
-                    />
+
+                  {selectedRole.is_system && (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-600 space-y-1">
+                      <p className="font-bold text-slate-800">🔒 System Protection Active</p>
+                      <p className="leading-normal">
+                        System roles are seeded globally. Their permissions are highly optimized, immutable, and protected from local modification or deletion.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Permissions Checklist Grouped by Category */}
+                  <div className="space-y-4">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Entitlements Matrix ("WHAT" Layer)</h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {/* Group permissions by category */}
+                      {Array.from(new Set(allPermissions.map(p => p.category))).map(category => (
+                        <div key={category} className="border border-slate-100 rounded-lg p-3 space-y-2 bg-slate-50/50">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block border-b border-slate-100 pb-1">
+                            {category}
+                          </span>
+                          
+                          <div className="space-y-1.5">
+                            {allPermissions
+                              .filter(p => p.category === category)
+                              .map(permission => {
+                                const rolePerms = rolePermissionsMap[selectedRole.id] || [];
+                                const isAssigned = rolePerms.includes(permission.code);
+                                const canEdit = !selectedRole.is_system && (hasPermission('tenant.manage_settings') || hasPermission('users.assign_roles'));
+                                
+                                return (
+                                  <label
+                                    key={permission.id}
+                                    className={`flex items-start space-x-2.5 p-1.5 rounded text-xs transition-colors ${
+                                      canEdit ? 'cursor-pointer hover:bg-slate-100/50' : 'cursor-not-allowed opacity-80'
+                                    }`}
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={isAssigned}
+                                      disabled={!canEdit || editRolePermsLoading}
+                                      onChange={() => handleTogglePermission(selectedRole.id, permission.id, isAssigned)}
+                                      className="mt-0.5 rounded text-slate-900 focus:ring-slate-900 border-slate-300"
+                                    />
+                                    <div className="space-y-0.5 leading-tight">
+                                      <span className="font-semibold text-slate-800 block">{permission.code}</span>
+                                      <span className="text-[10px] text-slate-400 block">{permission.description}</span>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-500">Functional Role</label>
-                    <select
-                      value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value)}
-                      className="w-full px-3 py-1.5 border border-slate-200 bg-white rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900"
-                    >
-                      <option value="observer">Observer (Default Shopfloor)</option>
-                      <option value="site_manager">Site Manager</option>
-                      <option value="contract_manager">Contract Manager</option>
-                      <option value="viewer">Viewer / compliance</option>
-                    </select>
+
+                  {/* Active Users in this Role */}
+                  <div className="border-t border-slate-150 pt-5 space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Assigned Members</h3>
+                    
+                    {teamProfiles.filter(p => p.id === selectedRole.id).length === 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {teamProfiles.map(profileItem => (
+                          <div key={profileItem.id} className="text-[10px] text-slate-500 bg-slate-50 border border-slate-100 rounded px-2.5 py-1">
+                            {profileItem.full_name} ({profileItem.email})
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-slate-400 italic">Inspect assignments or use the Team tab to grant/revoke this role to users.</p>
+                    )}
                   </div>
-                  <button
-                    type="submit"
-                    className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
-                  >
-                    Send Invitation
-                  </button>
-                </form>
-              </div>
+
+                </div>
+              ) : (
+                <div className="bg-white border border-slate-200 rounded-xl p-8 shadow-2xs text-center space-y-3">
+                  <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto text-slate-400">
+                    <Lock className="w-6 h-6" />
+                  </div>
+                  <div className="max-w-xs mx-auto space-y-1">
+                    <h3 className="text-sm font-bold text-slate-900">Select a Role</h3>
+                    <p className="text-xs text-slate-500 leading-normal">
+                      Click on any role in the list to manage its associated system permissions, toggle functional permissions, or inspect membership.
+                    </p>
+                  </div>
+                </div>
+              )}
 
             </div>
           </div>
@@ -906,6 +1716,11 @@ export default function DocsPortal() {
             </div>
 
           </div>
+        )}
+
+        {/* TAB 5: Tool Builder */}
+        {activeTab === 'tools' && (
+          <ToolBuilder />
         )}
 
       </main>

@@ -307,3 +307,47 @@ $$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 - **Reason:** Adheres to enterprise zero-trust security.
 - **Deferred:** None.
 - **Implementation Implication (Phase 1):** Automated tests must assert that a user with roles but no scope assignments receives empty result sets.
+
+---
+
+## 8. Phase 3 Achievements: Strict Real-Time RBAC & Scope Enforcement
+
+Phase 3 transitions the decoupled RBAC and Scope architecture into an active, database-enforced, and real-time manageable system.
+
+### 8.1 Database-Level Security Triggers (`018_phase3_rbac_enforcement.sql`)
+Instead of relying purely on frontend or client-side checks, DASH V2 enforces strict RBAC and Scope transitions directly within the Postgres transaction lifecycle:
+- **Tenant Isolation Enforcement:** Triggers prevent any cross-tenant role mapping, role assignments, or scope mappings.
+- **Self-Elevation Block:** Users are strictly forbidden from assigning roles or scopes to themselves (blocking self-elevation vectors), even if they hold administrative rights.
+- **System-Role Protection:** Global seeded system roles (e.g., `tenant_admin`, `observer`) are fully protected. Their permissions cannot be altered, and the roles cannot be deleted by tenant administrators.
+- **Status Restrictions:** Profile status changes (active/suspended) are locked behind permission validation (`users.manage_status`). Suspended users are completely blocked from executing any database queries via RLS policies.
+- **Automated Audit Logging:** Every role creation, deletion, scope assignment, and permission modification triggers an immediate, immutable insert into `public.audit_logs`.
+
+### 8.2 Performant Unified State API (`public.get_user_authorization_state`)
+To eliminate multiple high-latency joins during the frontend session lifecycle, a secure RPC endpoint compiles the complete authorization matrix for the current user into a single structured JSONB payload:
+```json
+{
+  "is_platform_admin": false,
+  "roles": [
+    { "id": "uuid", "name": "Observer", "code": "observer" }
+  ],
+  "permissions": [
+    "observations.create",
+    "observations.read_own",
+    "tools.read"
+  ],
+  "contracts": [
+    { "id": "uuid", "name": "DHL Retail", "code": "dhl_retail" }
+  ],
+  "sites": [
+    { "id": "uuid", "name": "Milton Keynes Depot", "code": "mk_depot" }
+  ]
+}
+```
+This is bound directly into the React `useAuth` context, providing high-performance client-side authorization lookups (`hasPermission('observations.create')` and `hasOperationalScope(contractId, siteId)`).
+
+### 8.3 Interactive RBAC Workspace
+The **Roles & Permissions** tab in the admin portal provides a beautiful, zero-trust workspace for managing these constraints:
+- **Custom Role Engine:** Enables on-the-fly custom role creation, custom code formatting, and deletion.
+- **Dynamic Permission Checkbox Matrix:** Organizes all system entitlements by category, allowing easy, real-time custom permission toggles.
+- **Membership & Boundary Assignments:** Enables managing user profiles in the **Team & Invitations** tab to assign/revoke functional roles, commercial contracts, and physical site scopes seamlessly.
+
