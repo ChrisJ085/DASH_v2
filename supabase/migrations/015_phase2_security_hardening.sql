@@ -48,7 +48,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth, pg_temp;
 
 
--- 2. HARDEN BOOTSTRAP TENANT PROCEDURE
+-- 2. HARDEN BOOTSTRAP TENANT PROCEDURE WITH CONCURRENCY CONTROLS
 CREATE OR REPLACE FUNCTION public.bootstrap_tenant(
     p_tenant_name TEXT,
     p_admin_name TEXT
@@ -56,6 +56,7 @@ CREATE OR REPLACE FUNCTION public.bootstrap_tenant(
 RETURNS UUID AS $$
 DECLARE
     v_user_id UUID;
+    v_existing_tenant_id UUID;
     v_tenant_id UUID;
     v_role_id UUID;
     v_slug TEXT;
@@ -66,11 +67,14 @@ BEGIN
         RAISE EXCEPTION 'Authentication required to bootstrap tenant';
     END IF;
 
-    -- B. Existing Membership Guard (Reject if already associated with any tenant)
-    IF EXISTS (
-        SELECT 1 FROM public.profiles 
-        WHERE id = v_user_id AND tenant_id IS NOT NULL AND deleted_at IS NULL
-    ) THEN
+    -- B. Concurrency Control & Existing Membership Guard
+    -- Obtain a row-level lock on the calling user's profile to prevent concurrent bootstrap attempts by the same user.
+    SELECT tenant_id INTO v_existing_tenant_id 
+    FROM public.profiles 
+    WHERE id = v_user_id 
+    FOR UPDATE;
+
+    IF v_existing_tenant_id IS NOT NULL THEN
         RAISE EXCEPTION 'User is already associated with a tenant';
     END IF;
 
@@ -88,16 +92,20 @@ BEGIN
         RAISE EXCEPTION 'An organisation with a similar name already exists. Please choose a different name.';
     END IF;
 
-    -- D. Tenant Creation (Database-controlled)
-    INSERT INTO public.tenants (
-        name,
-        slug,
-        status
-    ) VALUES (
-        trim(p_tenant_name),
-        v_slug,
-        'active'
-    ) RETURNING id INTO v_tenant_id;
+    -- D. Tenant Creation with Concurrency Trap
+    BEGIN
+        INSERT INTO public.tenants (
+            name,
+            slug,
+            status
+        ) VALUES (
+            trim(p_tenant_name),
+            v_slug,
+            'active'
+        ) RETURNING id INTO v_tenant_id;
+    EXCEPTION WHEN unique_violation THEN
+        RAISE EXCEPTION 'An organisation with a similar name already exists. Please choose a different name.';
+    END;
 
     -- E. Safe Profile Association (Binds user to the newly created tenant context)
     UPDATE public.profiles

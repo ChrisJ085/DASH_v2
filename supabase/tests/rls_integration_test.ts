@@ -48,7 +48,9 @@ async function runLiveIntegrationTests() {
     auth: { autoRefreshToken: false, persistSession: false }
   });
 
-  const anonClient = createClient(supabaseUrl, supabaseAnonKey);
+  const anonClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
 
   let tenantAId: string;
   let tenantBId: string;
@@ -60,7 +62,7 @@ async function runLiveIntegrationTests() {
     // Seed Tenant A and Tenant B
     const { data: tenantA, error: tAErr } = await adminClient
       .from('tenants')
-      .insert({ name: 'Integration Test Tenant A', slug: 'integration-test-tenant-a', status: 'active' })
+      .insert({ name: 'Integration Test Tenant A', slug: `integration-test-tenant-a-${Date.now()}`, status: 'active' })
       .select('id')
       .single();
     if (tAErr) throw new Error(`Tenant A seed error: ${tAErr.message}`);
@@ -69,44 +71,112 @@ async function runLiveIntegrationTests() {
 
     const { data: tenantB, error: tBErr } = await adminClient
       .from('tenants')
-      .insert({ name: 'Integration Test Tenant B', slug: 'integration-test-tenant-b', status: 'active' })
+      .insert({ name: 'Integration Test Tenant B', slug: `integration-test-tenant-b-${Date.now()}`, status: 'active' })
       .select('id')
       .single();
     if (tBErr) throw new Error(`Tenant B seed error: ${tBErr.message}`);
     tenantBId = tenantB.id;
     console.log(`  - Tenant B Created: ${tenantBId}`);
 
-    console.log('\n[2/7] Seeding Test Profiles (Mapping to hypothetical Auth Users)...');
-    // Seed Profile User A1 (Tenant A)
-    userA1Id = crypto.randomUUID();
-    const { error: pA1Err } = await adminClient
+    console.log('\n[2/7] Seeding Genuine Authenticated Auth Users via admin API...');
+    const userA1Email = `usera1_${Date.now()}@integrationtest.com`;
+    const userA1Password = 'SecurePassword123!';
+    const userB1Email = `userb1_${Date.now()}@integrationtest.com`;
+    const userB1Password = 'SecurePassword123!';
+
+    const { data: userA1Data, error: createA1Err } = await adminClient.auth.admin.createUser({
+      email: userA1Email,
+      password: userA1Password,
+      email_confirm: true
+    });
+    if (createA1Err || !userA1Data.user) throw new Error(`Auth User A1 creation error: ${createA1Err?.message}`);
+    userA1Id = userA1Data.user.id;
+    console.log(`  - Genuine User A1 Created in Auth: ${userA1Id}`);
+
+    const { data: userB1Data, error: createB1Err } = await adminClient.auth.admin.createUser({
+      email: userB1Email,
+      password: userB1Password,
+      email_confirm: true
+    });
+    if (createB1Err || !userB1Data.user) throw new Error(`Auth User B1 creation error: ${createB1Err?.message}`);
+    userB1Id = userB1Data.user.id;
+    console.log(`  - Genuine User B1 Created in Auth: ${userB1Id}`);
+
+    console.log('  - Associating profiles with tenants and activating status...');
+    const { error: updA1Err } = await adminClient
       .from('profiles')
-      .insert({
-        id: userA1Id,
+      .update({
         tenant_id: tenantAId,
-        email: 'userA1@integrationtest.com',
-        full_name: 'User A1 (Tenant A)',
-        status: 'active'
-      });
-    if (pA1Err) throw new Error(`Profile A1 seed error: ${pA1Err.message}`);
-    console.log(`  - Profile User A1 Created: ${userA1Id}`);
+        status: 'active',
+        full_name: 'Genuine User A1 (Tenant A)'
+      })
+      .eq('id', userA1Id);
+    if (updA1Err) throw new Error(`Profile A1 association error: ${updA1Err.message}`);
 
-    // Seed Profile User B1 (Tenant B)
-    userB1Id = crypto.randomUUID();
-    const { error: pB1Err } = await adminClient
+    const { error: updB1Err } = await adminClient
       .from('profiles')
-      .insert({
-        id: userB1Id,
+      .update({
         tenant_id: tenantBId,
-        email: 'userB1@integrationtest.com',
-        full_name: 'User B1 (Tenant B)',
-        status: 'active'
-      });
-    if (pB1Err) throw new Error(`Profile B1 seed error: ${pB1Err.message}`);
-    console.log(`  - Profile User B1 Created: ${userB1Id}`);
+        status: 'active',
+        full_name: 'Genuine User B1 (Tenant B)'
+      })
+      .eq('id', userB1Id);
+    if (updB1Err) throw new Error(`Profile B1 association error: ${updB1Err.message}`);
 
-    console.log('\n[3/7] Verifying Anonymous Access Restrictions...');
-    const { data: anonData, error: anonErr } = await anonClient
+    // Grant roles to users inside user_roles so they have has_permission rights
+    const { data: adminRoleRecord, error: roleGetErr } = await adminClient
+      .from('roles')
+      .select('id')
+      .eq('code', 'tenant_admin')
+      .limit(1)
+      .single();
+
+    if (roleGetErr || !adminRoleRecord) {
+      throw new Error(`Failed to retrieve tenant_admin system role: ${roleGetErr?.message}`);
+    }
+
+    const { error: roleGrantA1Err } = await adminClient.from('user_roles').insert({
+      user_id: userA1Id,
+      role_id: adminRoleRecord.id,
+      tenant_id: tenantAId
+    });
+    if (roleGrantA1Err) throw new Error(`Failed to grant user_roles for A1: ${roleGrantA1Err.message}`);
+
+    const { error: roleGrantB1Err } = await adminClient.from('user_roles').insert({
+      user_id: userB1Id,
+      role_id: adminRoleRecord.id,
+      tenant_id: tenantBId
+    });
+    if (roleGrantB1Err) throw new Error(`Failed to grant user_roles for B1: ${roleGrantB1Err.message}`);
+    console.log('  - Roles assigned to user profiles.');
+
+    console.log('\n[3/7] Logging in as Users to obtain Authentic JWT Sessions...');
+    const { data: sessionA1Data, error: loginA1Err } = await anonClient.auth.signInWithPassword({
+      email: userA1Email,
+      password: userA1Password
+    });
+    if (loginA1Err || !sessionA1Data.session) throw new Error(`A1 login failed: ${loginA1Err?.message}`);
+    console.log('  - Genuine Session acquired for A1.');
+
+    const { data: sessionB1Data, error: loginB1Err } = await anonClient.auth.signInWithPassword({
+      email: userB1Email,
+      password: userB1Password
+    });
+    if (loginB1Err || !sessionB1Data.session) throw new Error(`B1 login failed: ${loginB1Err?.message}`);
+    console.log('  - Genuine Session acquired for B1.');
+
+    // Instantiate authentic client A1
+    const clientA1 = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: {
+        headers: {
+          Authorization: `Bearer ${sessionA1Data.session.access_token}`
+        }
+      }
+    });
+
+    console.log('\n[4/7] Verifying Anonymous Access Restrictions...');
+    const { data: anonData } = await anonClient
       .from('contracts')
       .select('*');
     
@@ -115,18 +185,8 @@ async function runLiveIntegrationTests() {
     }
     console.log('  ✅ SUCCESS: Unauthenticated caller returned 0 contracts.');
 
-    console.log('\n[4/7] Testing Tenant Isolation (Cross-Tenant SELECT/INSERT Blocks)...');
-    // Construct a client authenticated as User A1 by setting local context or mapping JWT
-    // (In integration test, we simulate A1 context)
-    const clientA1 = createClient(supabaseUrl, supabaseAnonKey, {
-      global: {
-        headers: {
-          Authorization: `Bearer mock-token-a1` // Under test, Supabase hooks translate this
-        }
-      }
-    });
-
-    // Attempt to select Tenant B's details using Client A1
+    console.log('\n[5/7] Testing Tenant Isolation (Cross-Tenant SELECT/INSERT Blocks)...');
+    // Attempt to select Tenant B's details using authentic Client A1
     const { data: crossData } = await clientA1
       .from('profiles')
       .select('*')
@@ -137,7 +197,7 @@ async function runLiveIntegrationTests() {
     }
     console.log('  ✅ SUCCESS: User A1 cannot select across tenant boundaries.');
 
-    console.log('\n[5/7] Testing Tenant Spoofing Blocks...');
+    console.log('\n[6/7] Testing Tenant Spoofing Blocks...');
     // Attempt to insert a Contract belonging to Tenant B using Client A1
     const { error: spoofError } = await clientA1
       .from('contracts')
@@ -153,7 +213,7 @@ async function runLiveIntegrationTests() {
     }
     console.log('  ✅ SUCCESS: Spoofed tenant_id insert rejected by WITH CHECK database policy.');
 
-    console.log('\n[6/7] Testing Suspended User Restrictions...');
+    console.log('\n[7/7] Testing Suspended User Restrictions...');
     // Set User A1 status to suspended
     await adminClient
       .from('profiles')
@@ -169,8 +229,9 @@ async function runLiveIntegrationTests() {
     }
     console.log('  ✅ SUCCESS: Suspended user was denied access to active tenant data.');
 
-    console.log('\n[7/7] Cleaning up Integration Seed Data...');
-    await adminClient.from('profiles').delete().in('id', [userA1Id, userB1Id]);
+    console.log('\nCleaning up Integration Seed Data...');
+    await adminClient.auth.admin.deleteUser(userA1Id);
+    await adminClient.auth.admin.deleteUser(userB1Id);
     await adminClient.from('tenants').delete().in('id', [tenantAId, tenantBId]);
     console.log('  ✅ SUCCESS: Integration test clean up complete.');
 
@@ -178,6 +239,12 @@ async function runLiveIntegrationTests() {
     process.exit(0);
   } catch (err) {
     console.error('\n❌ INTEGRATION RUNTIME ERROR:', (err as Error).message);
+    // Best-effort cleanup
+    if (userA1Id) await adminClient.auth.admin.deleteUser(userA1Id).catch(() => {});
+    if (userB1Id) await adminClient.auth.admin.deleteUser(userB1Id).catch(() => {});
+    if (tenantAId || tenantBId) {
+      await adminClient.from('tenants').delete().in('id', [tenantAId, tenantBId]).catch(() => {});
+    }
     process.exit(1);
   }
 }

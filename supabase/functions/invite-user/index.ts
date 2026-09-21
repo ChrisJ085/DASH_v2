@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     // 3. Determine Caller Tenant & Role Permissions (Server-side lookups)
     const { data: callerProfile, error: profileErr } = await adminClient
       .from('profiles')
-      .select('id, tenant_id, is_platform_admin')
+      .select('id, tenant_id, is_platform_admin, status')
       .eq('id', callerUser.id)
       .maybeSingle();
 
@@ -61,9 +61,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    if (!callerProfile.tenant_id && !callerProfile.is_platform_admin) {
+    // A. Caller Status Check
+    if (callerProfile.status !== 'active') {
       return new Response(
-        JSON.stringify({ error: 'Access denied: caller does not belong to any tenant' }),
+        JSON.stringify({ error: 'Access denied: Caller account is suspended or inactive' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // B. Tenant Scope Check
+    const targetTenantId = callerProfile.tenant_id;
+    if (!targetTenantId && !callerProfile.is_platform_admin) {
+      return new Response(
+        JSON.stringify({ error: 'Access denied: Caller is not associated with any organisation' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -84,15 +94,62 @@ Deno.serve(async (req) => {
     }
 
     // 4. Parse Target Request Body
-    const { email, name, role } = await req.json();
-    if (!email || !name || !role) {
+    const { email: rawEmail, name: rawName, role } = await req.json();
+    if (!rawEmail || !rawName || !role) {
       return new Response(
         JSON.stringify({ error: 'Parameters email, name, and role are required' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Verify role belongs to system or target tenant (Cannot assign platform_admin)
+    const email = rawEmail.trim().toLowerCase();
+    const name = rawName.trim();
+
+    if (!name || name.length < 2) {
+      return new Response(
+        JSON.stringify({ error: 'Full Name must be at least 2 characters long' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // C. Strict Email Validation
+    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+    if (!emailRegex.test(email)) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid email address format' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // D. Uniqueness and Membership Collision Validation
+    const { data: existingUser, error: existSearchErr } = await adminClient
+      .from('profiles')
+      .select('id, tenant_id')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existSearchErr) {
+      return new Response(
+        JSON.stringify({ error: `Database error checking user existence: ${existSearchErr.message}` }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (existingUser) {
+      if (existingUser.tenant_id === targetTenantId) {
+        return new Response(
+          JSON.stringify({ error: `User with email "${email}" is already associated with this organisation.` }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      } else {
+        return new Response(
+          JSON.stringify({ error: 'This user is already associated with another organisation and cannot be invited.' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // E. Strict Role Integrity & Cross-Tenant Escalation Prevention
     if (role === 'platform_admin') {
       return new Response(
         JSON.stringify({ error: 'Security Exception: Cannot assign Platform Admin privilege' }),
@@ -102,7 +159,7 @@ Deno.serve(async (req) => {
 
     const { data: roleRecord, error: roleSearchErr } = await adminClient
       .from('roles')
-      .select('id, code')
+      .select('id, code, tenant_id')
       .eq('code', role)
       .maybeSingle();
 
@@ -113,7 +170,15 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Caller: ${callerUser.email} is inviting ${email} to tenant ${callerProfile.tenant_id} as ${role}`);
+    // Ensure local role matches target tenant OR is system wide (tenant_id IS NULL)
+    if (roleRecord.tenant_id !== null && roleRecord.tenant_id !== targetTenantId) {
+      return new Response(
+        JSON.stringify({ error: 'Security Exception: Cannot assign a role belonging to another organisation' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Caller: ${callerUser.email} is inviting ${email} to tenant ${targetTenantId} as ${role}`);
 
     // 5. Invoke Supabase Admin Auth Invitation
     const { data: inviteData, error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, {
@@ -138,7 +203,7 @@ Deno.serve(async (req) => {
       .from('profiles')
       .upsert({
         id: targetUserId,
-        tenant_id: callerProfile.tenant_id,
+        tenant_id: targetTenantId,
         email: email,
         full_name: name,
         status: 'invited',
@@ -159,7 +224,7 @@ Deno.serve(async (req) => {
       .upsert({
         user_id: targetUserId,
         role_id: roleRecord.id,
-        tenant_id: callerProfile.tenant_id
+        tenant_id: targetTenantId
       });
 
     if (roleAssignErr) {
@@ -173,7 +238,7 @@ Deno.serve(async (req) => {
     await adminClient
       .from('audit_logs')
       .insert({
-        tenant_id: callerProfile.tenant_id,
+        tenant_id: targetTenantId,
         actor_id: callerUser.id,
         action_type: 'user.invite',
         entity_type: 'profile',
