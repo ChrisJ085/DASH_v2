@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../lib/auth-context';
+import { inviteUser } from '../lib/invitation-service';
 import { supabase } from '../lib/supabase';
 import {
   Layers,
@@ -212,7 +213,7 @@ export default function DocsPortal() {
     }
   };
 
-  // Handle Invite Team Member (Simulation & Postgres integration)
+  // Handle Invite Team Member (Secure Server-Side Edge Function Flow)
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteError(null);
@@ -221,45 +222,34 @@ export default function DocsPortal() {
     if (!profile?.tenant_id) return;
 
     try {
-      // In a live Supabase project, invitation is securely managed by calling:
-      // supabase.auth.admin.inviteUserByEmail() on the server, which then triggers public.profiles handle_new_user trigger.
-      // To simulate the correct schema relationship and display tenant association, we can add a placeholder Profile record directly.
-      // Generates a mock Auth ID for simulation purposes
-      const mockAuthId = crypto.randomUUID();
+      // Calls the secure server-side Edge Function
+      const result = await inviteUser(inviteEmail, inviteName, inviteRole);
 
-      const { error: profileInsError } = await supabase.from('profiles').insert({
-        id: mockAuthId,
-        tenant_id: profile.tenant_id,
-        email: inviteEmail,
-        full_name: inviteName,
-        status: 'invited',
-        invited_by: profile.id,
-        invited_at: new Date().toISOString()
-      });
-
-      if (profileInsError) throw profileInsError;
-
-      // Assign the selected role to user_roles
-      const { data: roleData } = await supabase
-        .from('roles')
-        .select('id')
-        .eq('code', inviteRole)
-        .maybeSingle();
-
-      if (roleData?.id) {
-        await supabase.from('user_roles').insert({
-          user_id: mockAuthId,
-          role_id: roleData.id,
-          tenant_id: profile.tenant_id
-        });
+      if (result.success) {
+        setInviteSuccess(`Invitation successfully sent to ${inviteEmail}! Profile provisioned under "${inviteRole}" role.`);
+        setInviteEmail('');
+        setInviteName('');
+        await fetchTenantData();
       }
-
-      setInviteSuccess(`Invitation sent to ${inviteEmail}! Added to ${inviteRole} role.`);
-      setInviteEmail('');
-      setInviteName('');
-      await fetchTenantData();
-    } catch (err) {
-      setInviteError((err as Error).message);
+    } catch (err: any) {
+      const errMsg = err.message || '';
+      console.warn('Invitation attempt failed:', err);
+      
+      // Check if the edge function is simply not deployed yet to the active Supabase project
+      if (
+        errMsg.includes('Functions') || 
+        errMsg.includes('not found') || 
+        errMsg.includes('404') || 
+        errMsg.includes('Failed to fetch')
+      ) {
+        setInviteError(
+          `The client successfully initiated a secure, zero-trust invitation request, but the server-side Edge Function is not deployed or configured in your active Supabase project. To resolve this, run:\n\n` +
+          `  supabase functions deploy invite-user\n\n` +
+          `in your local terminal. This ensures that administrative invitations remain fully server-side without exposing service-role secrets in the client.`
+        );
+      } else {
+        setInviteError(errMsg);
+      }
     }
   };
 

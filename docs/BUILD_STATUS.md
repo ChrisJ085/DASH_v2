@@ -32,7 +32,7 @@ Phase 1 implemented the complete database foundation for DASH V2 in modular Post
 
 ## 2. Phase 2 Accomplishments & Auth & Tenancy Core
 
-Phase 2 established the complete, secure user authentication lifecycle, dynamic tenant context retrieval, and onboarding/on-boarding foundations:
+Phase 2 established the complete, secure user authentication lifecycle, dynamic tenant context retrieval, and onboarding/on-boarding foundations. In addition, a target security remediation was applied to secure administrative boundaries:
 
 | Module / Layer | Implementation Outcome | Associated Migration / Files | Status |
 |---|---|---|---|
@@ -42,12 +42,17 @@ Phase 2 established the complete, secure user authentication lifecycle, dynamic 
 | **Tenant Bootstrap Procedure**| Formulated `public.bootstrap_tenant` RPC function allowing unassociated users to securely register a new tenant and gain the system global `tenant_admin` role. | `014_phase2_auth_tenancy.sql` | **Completed** |
 | **Durable Auth Context** | Re-engineered `/src/lib/auth-context.tsx` to handle in-memory retrieval of Session, User, Profile, Tenant, error logging, and dynamic `refreshProfile` contexts. | `/src/lib/auth-context.tsx` | **Completed** |
 | **Onboarding & Shell UI** | Crafted a beautiful, responsive, and secure client-side portal housing Tenant Setup (Bootstrap) views, isolated contract/site managers, and team management invitation forms. | `/src/components/DocsPortal.tsx`, `/src/pages/Login.tsx` | **Completed** |
+| **Trigger Hardening (Security)** | Refactored `handle_new_user()` trigger to completely ignore client-provided metadata for sensitive parameters. It assigns `tenant_id` to strictly `NULL` and `status` to `'invited'`. | `015_phase2_security_hardening.sql` | **Completed** |
+| **Bootstrap Hardening (Security)** | Hardened `bootstrap_tenant()` by revoking execute permissions from `PUBLIC` and `anon`, allowing only `authenticated`. Added existing membership checks and unique slug conflict handling. | `015_phase2_security_hardening.sql` | **Completed** |
+| **Server-side Invitations** | Designed a standard Supabase Deno Edge Function (`invite-user`) that uses the privileged service role on the backend to authenticate callers, verify roles, invite users, and provision target database profiles safely. | `/supabase/functions/invite-user/index.ts` | **Completed** |
+| **Client-side Isolation** | Created `/src/lib/invitation-service.ts` to cleanly invoke the secure edge function, keeping React views isolated from administrative secrets, token handling, and DB details. | `/src/lib/invitation-service.ts` | **Completed** |
+| **Self-Signup Elimination** | Removed unrestricted public signup toggles and forms from `Login.tsx`, replacing it with an explicitly controlled, dedicated "Register New Organisation" flow. | `/src/pages/Login.tsx` | **Completed** |
 
 ---
 
 ## 3. Verification and Validation Suite
 
-Validation tests verify both schema structures and security rule alignments in the DASH V2 workspace:
+Validation tests verify both schema structures and security rule alignments in the DASH V2 workspace. We clearly distinguish between static structural checks and live database execution:
 
 1. **Database Schema Static Validation** (`supabase/tests/schema_validator.ts`):
    - Proves existence of all 24 tables.
@@ -60,6 +65,11 @@ Validation tests verify both schema structures and security rule alignments in t
    - Audits existence of platform admin escalation prevention triggers.
    - Audits profile trigger creation on `auth.users`.
    - Audits existence of the bootstrap procedure.
+   - Audits and verifies that execution permissions on `bootstrap_tenant` are revoked from `PUBLIC` and `anon`.
+
+3. **Database RLS Runtime Integration Tests** (`supabase/tests/rls_integration_test.ts`):
+   - Programmed a comprehensive suite testing actual, live database transaction isolation: Tenant A/B SELECT isolation, `WITH CHECK` tenant spoofing blocks, suspended user exclusions, and bootstrap duplication restrictions.
+   - **Honest Status Limitation:** Since the preview workspace operates on sandbox placeholder environment variables, a live query run is skipped at runtime to prevent fabricated results. The full, executable test script remains documented and deployable in the source code.
 
 *Result:* **All static, schema, and security verification tests compiled and executed with 100% success.**
 

@@ -112,6 +112,22 @@ function runSecurityAudit(): void {
     console.log('  [OK] Tenant Bootstrap stored procedure "bootstrap_tenant" is defined.');
   }
 
+  // Check REVOKE and GRANT declarations
+  const hasRevokePublic = /REVOKE\s+EXECUTE\s+ON\s+FUNCTION\s+public\.bootstrap_tenant\s*\(.*?\)\s+FROM\s+PUBLIC/i.test(fullSqlContent);
+  const hasGrantAuthenticated = /GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+public\.bootstrap_tenant\s*\(.*?\)\s+TO\s+authenticated/i.test(fullSqlContent);
+
+  if (!hasRevokePublic) {
+    errors.push('VULNERABILITY: Execution permission on public.bootstrap_tenant has not been revoked from PUBLIC!');
+  } else {
+    console.log('  [OK] public.bootstrap_tenant execution permission revoked from PUBLIC.');
+  }
+
+  if (!hasGrantAuthenticated) {
+    errors.push('SECURITY POLICY: Execution permission on public.bootstrap_tenant is not explicitly granted to authenticated role.');
+  } else {
+    console.log('  [OK] public.bootstrap_tenant execution permission granted to authenticated role.');
+  }
+
   console.log('------------------------------------------------------------------------');
   reportAndExit(errors);
 }

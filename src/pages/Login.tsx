@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Layers, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { Layers, ShieldAlert, CheckCircle2, Building2 } from 'lucide-react';
 
 export const Login = () => {
-  const [isSignUp, setIsSignUp] = useState(false);
+  const [isRegisterOrg, setIsRegisterOrg] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -20,8 +20,8 @@ export const Login = () => {
     setInfo(null);
 
     try {
-      if (isSignUp) {
-        // Sign up with Supabase Auth
+      if (isRegisterOrg) {
+        // Controlled flow: Register a brand new user who will immediately bootstrap an organization
         const { error: signUpError } = await supabase.auth.signUp({
           email,
           password,
@@ -34,11 +34,11 @@ export const Login = () => {
 
         if (signUpError) throw signUpError;
         
-        setInfo('Account created successfully! Please log in with your credentials.');
-        setIsSignUp(false);
+        setInfo('Organisation administrator account created successfully! Please sign in with your credentials to set up your organisation.');
+        setIsRegisterOrg(false);
         setPassword('');
       } else {
-        // Log in with Supabase Auth
+        // Standard user or admin sign in
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email,
           password,
@@ -85,11 +85,21 @@ export const Login = () => {
           </div>
         )}
 
+        {/* Info box for Controlled Registration */}
+        {isRegisterOrg && (
+          <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start space-x-2.5 text-xs text-indigo-950">
+            <Building2 className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+            <p className="leading-relaxed">
+              <strong>Organisation Setup:</strong> Creating an account here designates you as a tenant administrator. After signing in, you will be prompted to bootstrap your private organisation.
+            </p>
+          </div>
+        )}
+
         {/* Auth Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {isSignUp && (
+          {isRegisterOrg && (
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 block">Full Name</label>
+              <label className="text-xs font-semibold text-slate-700 block">Your Name (Admin)</label>
               <input
                 type="text"
                 placeholder="John Doe"
@@ -128,7 +138,7 @@ export const Login = () => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-sm font-semibold shadow-xs transition-colors disabled:opacity-50 mt-2 cursor-pointer flex justify-center items-center"
+            className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-sm font-semibold shadow-xs transition-colors disabled:opacity-50 mt-2 cursor-pointer flex justify-center items-center font-sans"
           >
             {loading ? (
               <span className="flex items-center space-x-2">
@@ -138,8 +148,8 @@ export const Login = () => {
                 </svg>
                 <span>Processing...</span>
               </span>
-            ) : isSignUp ? (
-              'Create Account'
+            ) : isRegisterOrg ? (
+              'Register Admin Account'
             ) : (
               'Sign In'
             )}
@@ -147,19 +157,19 @@ export const Login = () => {
         </form>
 
         {/* Toggle link */}
-        <div className="text-center">
+        <div className="text-center pt-2">
           <button
             type="button"
             onClick={() => {
-              setIsSignUp(!isSignUp);
+              setIsRegisterOrg(!isRegisterOrg);
               setError(null);
               setInfo(null);
             }}
             className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline font-medium cursor-pointer"
           >
-            {isSignUp
-              ? 'Already have an account? Sign In'
-              : "Don't have an account? Sign Up"}
+            {isRegisterOrg
+              ? 'Already have an admin account? Sign In'
+              : 'Register a New Organisation'}
           </button>
         </div>
       </div>
