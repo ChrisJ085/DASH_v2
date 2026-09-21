@@ -1,0 +1,7 @@
+{
+  "name": "DASH V2",
+  "description": "Multi-tenant behavioural observation and configurable data-gathering platform architecture (Phase 0).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
