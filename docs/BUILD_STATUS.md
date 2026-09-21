@@ -4,6 +4,7 @@
 - **Phase 0 (Architecture Baseline):** Complete / Superseded by Phase 0.1 corrections
 - **Phase 0.1 (Architecture Corrections & Decisions):** **COMPLETE**
 - **Phase 1 (Database & Supabase Foundation):** **COMPLETE**
+- **Phase 2 (Auth & Tenancy Core):** **COMPLETE**
 
 ---
 
@@ -29,23 +30,42 @@ Phase 1 implemented the complete database foundation for DASH V2 in modular Post
 
 ---
 
-## 2. Phase 1 Verification and Validation Suite
+## 2. Phase 2 Accomplishments & Auth & Tenancy Core
 
-To ensure absolute alignment with Phase 0.1 specs, a TypeScript validation suite was created in `/supabase/tests/schema_validator.ts` and executed using `npx tsx`:
+Phase 2 established the complete, secure user authentication lifecycle, dynamic tenant context retrieval, and onboarding/on-boarding foundations:
 
-- **All 24 Tables Validated**: Checked for successful creation of every relational block.
-- **Tenant Isolation Verified**: Proved that all 22 tenant-isolated tables carry a `tenant_id` column.
-- **RLS Enablement Check**: Assured that all 24 tables carry an explicit `ENABLE ROW LEVEL SECURITY` statement.
-- **Composite Unique Verification**: Verified that all parent tables enforce composite unique constraint `(tenant_id, id)`.
-- **Composite Foreign Key Verification**: Inspected all 23 child-parent foreign key constraints to confirm they use composite references `(tenant_id, parent_id) -> (tenant_id, id)` for bulletproof cross-tenant blocking.
-- **Immutability Trigger Verification**: Confirmed trigger bindings are correctly declared on all 6 tool configuration entities.
-- **Procedural and Stored Functions Verification**: Proved existence of all security helper functions and the `tools_adopt_template` stored procedure.
-
-*Result:* **100% of checks passed perfectly with zero errors.**
+| Module / Layer | Implementation Outcome | Associated Migration / Files | Status |
+|---|---|---|---|
+| **Database Hardening** | Re-declared all `SECURITY DEFINER` procedures with an explicitly controlled `search_path = public, pg_temp` or `public, auth, pg_temp` preventing schema hijacking. | `014_phase2_auth_tenancy.sql` | **Completed** |
+| **Profile Lifecycle** | Implemented trigger `on_auth_user_created` to automatically insert matching records into `public.profiles` when new users are invited or signed up. | `014_phase2_auth_tenancy.sql` | **Completed** |
+| **Escalation Security** | Designed database trigger `tr_prevent_platform_admin_escalation` to completely block normal users from self-promoting to platform admins. | `014_phase2_auth_tenancy.sql` | **Completed** |
+| **Tenant Bootstrap Procedure**| Formulated `public.bootstrap_tenant` RPC function allowing unassociated users to securely register a new tenant and gain the system global `tenant_admin` role. | `014_phase2_auth_tenancy.sql` | **Completed** |
+| **Durable Auth Context** | Re-engineered `/src/lib/auth-context.tsx` to handle in-memory retrieval of Session, User, Profile, Tenant, error logging, and dynamic `refreshProfile` contexts. | `/src/lib/auth-context.tsx` | **Completed** |
+| **Onboarding & Shell UI** | Crafted a beautiful, responsive, and secure client-side portal housing Tenant Setup (Bootstrap) views, isolated contract/site managers, and team management invitation forms. | `/src/components/DocsPortal.tsx`, `/src/pages/Login.tsx` | **Completed** |
 
 ---
 
-## 3. MASTER ROADMAP CONTROL
+## 3. Verification and Validation Suite
+
+Validation tests verify both schema structures and security rule alignments in the DASH V2 workspace:
+
+1. **Database Schema Static Validation** (`supabase/tests/schema_validator.ts`):
+   - Proves existence of all 24 tables.
+   - Proves tenant_id isolation is attached to all 22 tenant tables.
+   - Proves strict Row Level Security is explicitly enabled.
+   - Checks composite unique and foreign key constraints to prevent cross-tenant leakage.
+
+2. **Database Security Constraint Verification** (`supabase/tests/security_validator.ts`):
+   - Audits all `SECURITY DEFINER` functions to verify strict `search_path` hardening.
+   - Audits existence of platform admin escalation prevention triggers.
+   - Audits profile trigger creation on `auth.users`.
+   - Audits existence of the bootstrap procedure.
+
+*Result:* **All static, schema, and security verification tests compiled and executed with 100% success.**
+
+---
+
+## 4. MASTER ROADMAP CONTROL
 
 ```
 Phase 0: Architecture Definition
@@ -56,10 +76,10 @@ Phase 0: Architecture Definition
 Phase 1: Database & Supabase Foundation (COMPLETE)
       │
       ▼
-Phase 2: Auth & Tenancy Core (Planned - Next Phase)
+Phase 2: Auth & Tenancy Core (COMPLETE)
       │
       ▼
-Phase 3: RBAC & Scope Enforcement (Planned)
+Phase 3: RBAC & Scope Enforcement (Planned - Next Phase)
       │
       ▼
 Phase 4: Tool Builder & Versioning (Planned)
