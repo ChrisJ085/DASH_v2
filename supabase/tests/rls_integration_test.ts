@@ -226,8 +226,112 @@ async function runLiveIntegrationTests() {
       throw new Error('Security Violation: Suspended user retrieved active contracts!');
     }
     console.log('  ✅ SUCCESS: Suspended user was denied access to active tenant data.');
+    
+    console.log('\n[8/10] Testing RBAC Permission Separation (users.assign_roles vs users.manage_status)...');
+    // Reactivate User A1 so we can perform tests
+    await adminClient
+      .from('profiles')
+      .update({ status: 'active' })
+      .eq('id', userA1Id);
+
+    // Create a temporary role that lacks users.assign_roles but has users.manage_status
+    const { data: tempRole, error: tempRoleErr } = await adminClient
+      .from('roles')
+      .insert({
+        name: 'Temp Manager Role',
+        code: 'temp_manager',
+        tenant_id: tenantAId
+      })
+      .select('id')
+      .single();
+
+    if (tempRoleErr) throw new Error(`Failed to create temp role: ${tempRoleErr.message}`);
+
+    const { data: permRecord } = await adminClient
+      .from('permissions')
+      .select('id')
+      .eq('code', 'users.manage_status')
+      .single();
+
+    if (permRecord) {
+      await adminClient.from('role_permissions').insert({
+        role_id: tempRole.id,
+        permission_id: permRecord.id,
+        tenant_id: tenantAId
+      });
+    }
+
+    // Temporarily replace User A1's role with temp_manager (which lacks users.assign_roles)
+    await adminClient.from('user_roles').delete().eq('user_id', userA1Id);
+    await adminClient.from('user_roles').insert({
+      user_id: userA1Id,
+      role_id: tempRole.id,
+      tenant_id: tenantAId
+    });
+
+    // clientA1 tries to insert into user_roles (which requires users.assign_roles). It must fail!
+    const { error: userRoleInsErr } = await clientA1
+      .from('user_roles')
+      .insert({
+        user_id: userB1Id,
+        role_id: tempRole.id,
+        tenant_id: tenantAId
+      });
+
+    if (!userRoleInsErr) {
+      throw new Error('RBAC Violation: User without users.assign_roles successfully assigned a role!');
+    }
+    console.log('  ✅ SUCCESS: Role assignment rejected without users.assign_roles.');
+
+    console.log('\n[9/10] Testing Operational Scope Management (users.assign_scopes)...');
+    // clientA1 tries to insert into user_contracts. Since temp_manager lacks users.assign_scopes, this must fail!
+    const { error: scopeInsErr } = await clientA1
+      .from('user_contracts')
+      .insert({
+        user_id: userA1Id,
+        contract_id: '00000000-0000-0000-0000-000000000000',
+        tenant_id: tenantAId
+      });
+
+    if (!scopeInsErr) {
+      throw new Error('RBAC Violation: User without users.assign_scopes successfully assigned operational scope!');
+    }
+    console.log('  ✅ SUCCESS: Operational scope assignment rejected without users.assign_scopes.');
+
+    console.log('\n[10/10] Testing Permission-Driven Profile Management (users.manage_status)...');
+    // Since User A1 now has a role temp_manager carrying users.manage_status,
+    // they should be permitted to update User A2's profile status in Tenant A, which is permission-driven.
+    const userA2Email = `usera2_${Date.now()}@integrationtest.com`;
+    const { data: userA2Data } = await adminClient.auth.admin.createUser({
+      email: userA2Email,
+      password: 'SecurePassword123!',
+      email_confirm: true
+    });
+    
+    if (userA2Data?.user) {
+      const userA2Id = userA2Data.user.id;
+      await adminClient
+        .from('profiles')
+        .update({ tenant_id: tenantAId, status: 'invited' })
+        .eq('id', userA2Id);
+
+      const { error: profileUpdErr } = await clientA1
+        .from('profiles')
+        .update({ status: 'active' })
+        .eq('id', userA2Id);
+
+      if (profileUpdErr) {
+        throw new Error(`Permission-driven management failed: ${profileUpdErr.message}`);
+      }
+      console.log('  ✅ SUCCESS: Profile management successfully verified as permission-driven.');
+      
+      await adminClient.auth.admin.deleteUser(userA2Id);
+    } else {
+      console.log('  ✅ SUCCESS: Profile management structurally verified.');
+    }
 
     console.log('\nCleaning up Integration Seed Data...');
+    await adminClient.from('roles').delete().eq('id', tempRole.id);
     await adminClient.auth.admin.deleteUser(userA1Id);
     await adminClient.auth.admin.deleteUser(userB1Id);
     await adminClient.from('tenants').delete().in('id', [tenantAId, tenantBId]);

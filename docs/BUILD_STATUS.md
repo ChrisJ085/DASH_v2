@@ -32,7 +32,7 @@ Phase 1 implemented the complete database foundation for DASH V2 in modular Post
 
 ## 2. Phase 2 Accomplishments & Auth & Tenancy Core
 
-Phase 2 established the complete, secure user authentication lifecycle, dynamic tenant context retrieval, and onboarding/on-boarding foundations. In addition, a target security remediation was applied to secure administrative boundaries:
+Phase 2 established the complete, secure user authentication lifecycle, dynamic tenant context retrieval, and onboarding/on-boarding foundations. In addition, target security remediations were applied to secure administrative and role-level boundaries:
 
 | Module / Layer | Implementation Outcome | Associated Migration / Files | Status |
 |---|---|---|---|
@@ -47,6 +47,7 @@ Phase 2 established the complete, secure user authentication lifecycle, dynamic 
 | **Server-side Invitations** | Designed a standard Supabase Deno Edge Function (`invite-user`) that uses the privileged service role on the backend to authenticate callers, verify roles, invite users, and provision target database profiles safely. | `/supabase/functions/invite-user/index.ts` | **Completed** |
 | **Client-side Isolation** | Created `/src/lib/invitation-service.ts` to cleanly invoke the secure edge function, keeping React views isolated from administrative secrets, token handling, and DB details. | `/src/lib/invitation-service.ts` | **Completed** |
 | **Self-Signup Elimination** | Removed unrestricted public signup toggles and forms from `Login.tsx`, replacing it with an explicitly controlled, dedicated "Register New Organisation" flow. | `/src/pages/Login.tsx` | **Completed** |
+| **RBAC Alignment (Security)** | Realigned RLS policies on `user_roles` to require `users.assign_roles`, and `user_contracts` / `user_sites` to require `users.assign_scopes`. Converted profile self-update trigger to be permission-driven using `users.manage_status` rather than literal role name strings. | `017_phase2_rbac_alignment.sql` | **Completed** |
 
 ---
 
