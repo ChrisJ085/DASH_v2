@@ -150,22 +150,37 @@ Deno.serve(async (req) => {
     }
 
     // E. Strict Role Integrity & Cross-Tenant Escalation Prevention
-    if (role === 'platform_admin') {
+    const isPlatformAdmin = !!callerProfile.is_platform_admin;
+
+    if (role === 'platform_admin' && !isPlatformAdmin) {
       return new Response(
         JSON.stringify({ error: 'Security Exception: Cannot assign Platform Admin privilege' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const { data: roleRecord, error: roleSearchErr } = await adminClient
+    // Query all roles matching the requested code to handle global vs. tenant duplicate codes deterministically
+    const { data: rolesFound, error: roleSearchErr } = await adminClient
       .from('roles')
       .select('id, code, tenant_id')
-      .eq('code', role)
-      .maybeSingle();
+      .eq('code', role);
 
-    if (roleSearchErr || !roleRecord) {
+    if (roleSearchErr || !rolesFound || rolesFound.length === 0) {
       return new Response(
         JSON.stringify({ error: `Invalid role selected: ${roleSearchErr?.message || 'not found'}` }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Deterministically resolve: prefer tenant-specific role over global role
+    let roleRecord = rolesFound.find((r: any) => r.tenant_id === targetTenantId);
+    if (!roleRecord) {
+      roleRecord = rolesFound.find((r: any) => r.tenant_id === null);
+    }
+
+    if (!roleRecord) {
+      return new Response(
+        JSON.stringify({ error: 'Security Exception: Selected role is not assignable within your organisation' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -174,6 +189,13 @@ Deno.serve(async (req) => {
     if (roleRecord.tenant_id !== null && roleRecord.tenant_id !== targetTenantId) {
       return new Response(
         JSON.stringify({ error: 'Security Exception: Cannot assign a role belonging to another organisation' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (roleRecord.code === 'platform_admin' && !isPlatformAdmin) {
+      return new Response(
+        JSON.stringify({ error: 'Security Exception: Platform Admin roles can only be assigned by Platform Administrators' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -197,59 +219,71 @@ Deno.serve(async (req) => {
 
     const targetUserId = inviteData.user.id;
 
-    // 6. Secure Database Provisioning (Updates profile and sets correct tenant_id inside DB)
-    // Note: Due to potential race conditions with trigger, we upsert safely.
-    const { error: profileUpdateErr } = await adminClient
-      .from('profiles')
-      .upsert({
-        id: targetUserId,
-        tenant_id: targetTenantId,
-        email: email,
-        full_name: name,
-        status: 'invited',
-        invited_by: callerUser.id,
-        invited_at: new Date().toISOString()
-      });
-
-    if (profileUpdateErr) {
-      return new Response(
-        JSON.stringify({ error: `Failed to link tenant to profile: ${profileUpdateErr.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Assign Role to User
-    const { error: roleAssignErr } = await adminClient
-      .from('user_roles')
-      .upsert({
-        user_id: targetUserId,
-        role_id: roleRecord.id,
-        tenant_id: targetTenantId
-      });
-
-    if (roleAssignErr) {
-      return new Response(
-        JSON.stringify({ error: `Failed to assign user role: ${roleAssignErr.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // 7. Write Audit Event
-    await adminClient
-      .from('audit_logs')
-      .insert({
-        tenant_id: targetTenantId,
-        actor_id: callerUser.id,
-        action_type: 'user.invite',
-        entity_type: 'profile',
-        entity_id: targetUserId,
-        new_state: {
+    try {
+      // 6. Secure Database Provisioning (Updates profile and sets correct tenant_id inside DB)
+      // Note: Due to potential race conditions with trigger, we upsert safely.
+      const { error: profileUpdateErr } = await adminClient
+        .from('profiles')
+        .upsert({
+          id: targetUserId,
+          tenant_id: targetTenantId,
           email: email,
-          name: name,
-          assigned_role: role,
-          auth_id: targetUserId
-        }
+          full_name: name,
+          status: 'invited',
+          invited_by: callerUser.id,
+          invited_at: new Date().toISOString()
+        });
+
+      if (profileUpdateErr) {
+        throw new Error(`Failed to link tenant to profile: ${profileUpdateErr.message}`);
+      }
+
+      // Assign Role to User
+      const { error: roleAssignErr } = await adminClient
+        .from('user_roles')
+        .upsert({
+          user_id: targetUserId,
+          role_id: roleRecord.id,
+          tenant_id: targetTenantId
+        });
+
+      if (roleAssignErr) {
+        throw new Error(`Failed to assign user role: ${roleAssignErr.message}`);
+      }
+
+      // 7. Write Audit Event using canonical column names
+      const { error: auditErr } = await adminClient
+        .from('audit_logs')
+        .insert({
+          tenant_id: targetTenantId,
+          user_id: callerUser.id,
+          action: 'user.invite',
+          target_type: 'profile',
+          target_id: targetUserId,
+          payload_after: {
+            email: email,
+            name: name,
+            assigned_role: role,
+            auth_id: targetUserId
+          }
+        });
+
+      if (auditErr) {
+        console.error(`Audit logging failed: ${auditErr.message}`);
+      }
+
+    } catch (dbErr: any) {
+      console.error(`Database provisioning failure. Rolling back invited auth user ${targetUserId}:`, dbErr.message);
+      // Rollback newly created Auth user to preserve atomic provisioning behavior
+      await adminClient.auth.admin.deleteUser(targetUserId).catch((cleanErr) => {
+        console.error(`Rollback cleanup failed to delete auth user ${targetUserId}:`, cleanErr.message);
       });
+
+      return new Response(
+        JSON.stringify({ error: `Invitation failed during database provisioning: ${dbErr.message}` }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     return new Response(
       JSON.stringify({ success: true, message: 'Invitation sent and user provisioned successfully', userId: targetUserId }),

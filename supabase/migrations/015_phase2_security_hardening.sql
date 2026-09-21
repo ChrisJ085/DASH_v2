@@ -139,11 +139,11 @@ BEGIN
     -- H. Write Audit Event
     INSERT INTO public.audit_logs (
         tenant_id,
-        actor_id,
-        action_type,
-        entity_type,
-        entity_id,
-        new_state
+        user_id,
+        action,
+        target_type,
+        target_id,
+        payload_after
     ) VALUES (
         v_tenant_id,
         v_user_id,
