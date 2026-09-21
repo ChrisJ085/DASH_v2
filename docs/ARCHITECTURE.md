@@ -1,10 +1,10 @@
 # DASH V2 - System Architecture Specification
 
 ## Document Control
-- **Phase:** Phase 0 (Architecture Definition)
-- **Status:** Approved for Baseline
+- **Phase:** Phase 0.1 (Architecture Corrections & Decisions)
+- **Status:** Approved Specification (Supersedes Phase 0 Baseline)
 - **Application:** DASH V2 (Behavioural Observation & Data-Gathering Platform)
-- **Backend Target:** Supabase (PostgreSQL, Supabase Auth, Storage, Row Level Security)
+- **Backend Target:** Supabase (PostgreSQL 15+, Supabase Auth, Storage, Row Level Security)
 - **Frontend Target:** React 19, TypeScript, Tailwind CSS, Vite
 
 ---
@@ -38,7 +38,7 @@ DASH PLATFORM
    TENANT (Organisation)
       │
       ▼
-DATA-GATHERING TOOLS (Abstract definitions)
+DATA-GATHERING TOOLS (Abstract definitions & containers)
       │
       ▼
 TOOL VERSIONS (Immutable published instruments)
@@ -54,7 +54,7 @@ TOOL VERSIONS (Immutable published instruments)
 
 ## 2. Multi-Tenant & Organizational Structure
 
-DASH V2 implements **logical multi-tenancy** within a shared Supabase PostgreSQL database, fortified by PostgreSQL Row Level Security (RLS) policies. Every tenant-owned entity carries a foreign key to `tenants.id`.
+DASH V2 implements **logical multi-tenancy** within a shared Supabase PostgreSQL database, fortified by PostgreSQL Row Level Security (RLS) policies and composite foreign keys. Every tenant-owned entity carries a foreign key to `tenants.id`.
 
 ### 2.1 The Contract-Site Relationship Model
 In real-world logistics and enterprise operations, a single geographic facility (Site) frequently serves multiple commercial agreements (Contracts), or a single Contract encompasses multiple Sites.
@@ -82,10 +82,11 @@ Tenant: *Example Logistics UK*
 
 Here, the *Chorley Hub* site exists once under the Tenant, but participates concurrently in both Contract A and Contract B.
 
-### 2.2 Strict Tenant Isolation
-- Under no circumstances may a user from Tenant A view, query, or mutate data belonging to Tenant B.
-- Tenant isolation is not an application-layer "filter"; it is a database-enforced RLS boundary.
-- Cross-tenant queries are structurally disallowed for tenant users.
+### 2.2 Database-Level Tenant Isolation & Composite Keys
+- Application validation improves user experience, but **database constraints must prevent structurally invalid cross-tenant relationships**.
+- Parent tables enforce `UNIQUE (tenant_id, id)`.
+- Child tables enforce composite foreign keys: `FOREIGN KEY (tenant_id, parent_id) REFERENCES parent(tenant_id, id)`.
+- The database physically rejects any attempt to link a Contract from Tenant A to a Site from Tenant B, or an Observation from Tenant A to a Tool from Tenant B.
 
 ---
 
@@ -116,6 +117,7 @@ Here, the *Chorley Hub* site exists once under the Tenant, but participates conc
 │  ┌───────────────────────────────────────────────────────────────────┐ │
 │  │ PostgreSQL 15+ Relational Database Engine                         │ │
 │  │  ├─ Row Level Security (RLS) Enforcement Layer                    │ │
+│  │  ├─ Composite Foreign Key Tenant Isolation                        │ │
 │  │  ├─ Normalized Relational Schema (3NF)                            │ │
 │  │  ├─ Deterministic Rule Evaluation Primitives                      │ │
 │  │  └─ Immutable Versioning & Audit Trigger Pipelines                │ │
@@ -124,9 +126,9 @@ Here, the *Chorley Hub* site exists once under the Tenant, but participates conc
 ```
 
 ### 3.1 Component Architecture Principles
-1. **Separation of Concerns:** Client code is responsible for UI rendering, input capture, and local state management. Business access boundaries and data validity are strictly verified in PostgreSQL / Supabase RLS.
-2. **Deterministic State:** Observation runs must never mutate tool versions. A tool version is an immutable snapshot.
-3. **No Service-Role Key on the Client:** The Supabase `service_role` key must **NEVER** be bundled into the React client or environment variables accessible to the browser. Only the public `anon` key is permitted.
+1. **Separation of Concerns:** Client code handles UI rendering, local state, and touch response. Business access boundaries, tenant isolation, and relational integrity are strictly enforced in PostgreSQL / Supabase RLS.
+2. **Deterministic Immutability:** Observation runs bind to frozen, immutable tool versions. An existing version can never be edited in place once published.
+3. **No Service-Role Key on the Client:** The Supabase `service_role` key must **NEVER** be bundled into client bundles. Only the public `anon` key is permitted.
 
 ---
 
@@ -158,32 +160,31 @@ DASH V2 features a responsive architecture tailored to distinct user roles and o
 
 ---
 
-## 5. Scale & High-Volume Strategy (100,000+ Observations)
+## 5. First-Class Template Architecture
 
-DASH V2 is designed to scale effortlessly to hundreds of thousands of observations without degradation:
-
-1. **Normalized vs. Unstructured Storage:**
-   - Observations are stored relationally: `observations` -> `observation_responses`.
-   - Avoids monolithic JSON blobs that cause locking contention, query bloat, and inability to perform indexed analytical aggregations.
-2. **Composite Indexing:**
-   - Multi-column indexes on `(tenant_id, site_id, observed_at DESC)` and `(tenant_id, contract_id, observed_at DESC)` ensure rapid filtering for dashboards.
-   - Foreign key indexes on all join tables (`contract_sites`, `user_contracts`, `user_sites`, `role_permissions`).
-3. **Partitioning Readiness:**
-   - The `observations` and `observation_responses` tables are structured with deterministic `tenant_id` and timestamp columns, allowing declarative PostgreSQL table partitioning (by month or year) if data volumes exceed millions of rows.
-4. **Binary & Asset Separation:**
-   - Heavy binary assets (photos and signatures) are never stored in the database. Only their storage paths, MIME metadata, and dimensions reside in `observation_photos` and `observation_signatures`.
-   - Actual files reside in Supabase Storage buckets secured by RLS.
+Templates in DASH V2 are managed via a dedicated, first-class entity (`tool_templates`):
+- **Catalog Distinction:** Platform templates have `tenant_id IS NULL`; tenant-shared templates carry the owning `tenant_id`.
+- **Materialization (Deep Copy) Rule:** Adopting a template performs an atomic deep-clone of all sections, questions, options, and rules into the adopting tenant's private namespace with new UUIDs.
+- **Zero Shared Reference:** After adoption, there is no live coupling. Modifications by the adopting tenant do not impact the source template or any other tenant.
 
 ---
 
-## 6. Phase Roadmap & Boundaries
+## 6. Scale & High-Volume Strategy (100,000+ Observations)
 
-| Phase | Title | Scope & Objectives | Status |
-|---|---|---|---|
-| **Phase 0** | **Architecture & Foundations** | System Architecture, Data Model, RBAC, Security/RLS, Tool Engine Specs, /docs | **Active (This Phase)** |
-| **Phase 1** | **Database & Migration Engine** | PostgreSQL DDL scripts, RLS policies, seeds, schema verification | Planned |
-| **Phase 2** | **Auth & Tenancy Core** | Supabase Auth integration, user invitations, profiles, tenant routing | Planned |
-| **Phase 3** | **RBAC & Scope Enforcement** | Role management, contract/site assignments, permission guards | Planned |
-| **Phase 4** | **Tool Builder & Versioning** | Tool designer, section/question editor, conditional logic engine, publishing | Planned |
-| **Phase 5** | **Observation Runner (Mobile & Web)** | Field capture UX, responsive runner, photo/signature upload, offline queue | Planned |
-| **Phase 6** | **Analytics, Reporting & Templates** | Aggregation views, export engine, platform template distribution | Planned |
+1. **Normalized Storage:** Observations and responses use structured 3NF tables (`observations`, `observation_responses`), avoiding monolithic JSON blobs that hinder indexing.
+2. **Composite Indexing:** Targeted indexes on `(tenant_id, site_id, observed_at DESC)` and `(tenant_id, contract_id, observed_at DESC)` accelerate filtering.
+3. **Omission of Un-displayed Questions:** Questions hidden by conditional rules do not generate empty rows in `observation_responses`, optimizing disk usage and preventing ambiguous states.
+4. **Binary Separation:** Photographs and signatures are stored in Supabase Storage with relational metadata pointers in `observation_photos` and `observation_signatures`.
+
+---
+
+## 7. Phase 0.1 Architecture Review Summary
+
+During Phase 0.1, the lead architect and engineering team reviewed the Phase 0 baseline and instituted six core corrections:
+
+1. **RBAC & Scope Model Clarification:** Decoupled Permission (WHAT) from Scope (WHERE). Specified that combining Contract and Site scopes operates as a **strict intersection (restriction)**, preventing unauthorized cross-depot access.
+2. **Database-Level Cross-Tenant Integrity:** Replaced simple foreign keys with composite foreign keys `(tenant_id, parent_id)` on all relational child tables.
+3. **First-Class Templates:** Replaced the `is_template` boolean flag with a dedicated `tool_templates` entity and defined adoption as an atomic deep-clone operation.
+4. **Tool Version Immutability:** Enforced the `draft -> published -> archived` lifecycle with database triggers preventing updates to published versions.
+5. **Declarative Rule Engine Hardening:** Specified actions (`show`, `hide`, `require`), operator mapping, HIDE-overrides-SHOW precedence, and automatic clearing of dependent data when controlling answers change.
+6. **Observation Response Model:** Enforced one response per question, omitted un-displayed questions, and eliminated redundant question text snapshots by binding directly to immutable tool versions.

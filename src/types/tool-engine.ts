@@ -13,12 +13,25 @@ export interface Tool {
   description: string | null;
   category: string;
   status: ToolStatus;
-  is_template: boolean;
-  origin_template_id: string | null;
+  is_template?: boolean;
+  origin_template_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+}
+
+export interface ToolTemplate {
+  id: string;
+  tenant_id: string | null; // NULL for platform-curated global template
+  source_tool_version_id: string;
+  name: string;
+  description: string | null;
+  category: string;
+  visibility: 'private' | 'tenant_shared' | 'platform_public';
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ToolVersion {

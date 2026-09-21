@@ -1,9 +1,9 @@
 # DASH V2 - Security, Authentication & Row Level Security (RLS) Strategy
 
 ## Document Control
-- **Phase:** Phase 0 (Architecture Definition)
-- **Status:** Approved Security Specification
-- **Security Boundary:** PostgreSQL Row Level Security (RLS) + Supabase Auth
+- **Phase:** Phase 0.1 (Architecture Corrections & Decisions)
+- **Status:** Approved Security Specification (Supersedes Phase 0 Baseline)
+- **Security Boundary:** PostgreSQL Row Level Security (RLS) + Composite Foreign Keys + Supabase Auth
 - **Zero-Trust Rule:** Never trust client-side input or client-side route guards for data access enforcement.
 
 ---
@@ -13,8 +13,8 @@
 1. **RLS as the Absolute Security Boundary:** Supabase Row Level Security is the primary enforcement mechanism. If an unauthorized client issues a direct API query or bypasses UI controls, the database rejects the query with zero rows returned or a permission violation error.
 2. **No Client-Side Authorization Assumptions:** UI visibility logic (hiding buttons or tabs) is purely a convenience mechanism; backend database policies independently evaluate every transaction.
 3. **Strict Database-Level Tenant Isolation:** Every multi-tenant table contains an indexed `tenant_id`. Every SELECT, INSERT, UPDATE, and DELETE query must verify tenant membership.
-4. **Guaranteed Multi-Tenant Siloing:** A user can never read, update, or reference entities from another tenant. Cross-tenant queries are blocked at the engine level.
-5. **Enforceable Operational Scopes:** Contract and site access boundaries are checked within PostgreSQL policies using relational joins or indexed helper functions.
+4. **Guaranteed Multi-Tenant Siloing via Composite FKs:** Parent tables enforce `UNIQUE (tenant_id, id)` and child tables enforce `FOREIGN KEY (tenant_id, ...)`. A user can never read, update, or reference entities from another tenant.
+5. **Enforceable Operational Scopes with Strict Intersection:** Contract and site access boundaries are checked within PostgreSQL policies using relational joins and `auth.has_operational_scope(contract_id, site_id)`. When both contract and site assignments exist, access requires satisfying BOTH conditions.
 6. **Zero Exposure of `service_role` Secrets:** The Supabase `service_role` key confers superuser privileges and is never exposed in client code, public environment variables, or client-side bundles.
 7. **Public Key Minimization:** Only the public Supabase `anon` key is bundled with the frontend, running under the strict constraints of authenticated user JWTs and RLS.
 8. **Zero Plaintext Password Storage:** Passwords are never handled, hashed, or stored within application tables. Supabase Auth (utilizing robust, salted bcrypt/argon2 hashing in `auth.users`) exclusively manages authentication credentials.
@@ -83,7 +83,7 @@ DASH V2 integrates natively with **Supabase Auth** for identity management while
 
 ## 3. Row Level Security (RLS) Strategy & Decision Matrix
 
-To ensure clarity and architectural consistency across future development phases, here are the explicit answers to the ten fundamental RLS design questions:
+Here are the explicit architectural specifications for the ten fundamental RLS design questions:
 
 ### 3.1 Question 1: How does Supabase identify the authenticated user?
 - **Answer:** Supabase validates the cryptographic signature of the incoming JWT bearer token and injects the user's UUID into the PostgreSQL session context, accessible via `auth.uid()`.
@@ -102,30 +102,23 @@ To ensure clarity and architectural consistency across future development phases
   ```sql
   USING (tenant_id = auth.current_tenant_id())
   ```
-  Users without a matching `tenant_id` are completely blind to the rows.
+  In addition, composite foreign keys `FOREIGN KEY (tenant_id, parent_id) REFERENCES parent(tenant_id, id)` prevent any cross-tenant relationship insertion at the engine level.
 
 ### 3.5 Question 5: How is contract access enforced?
 - **Answer:** For non-admin roles, access to contract-specific records requires either:
   1. A record in `user_contracts` linking the user's ID to the contract ID, OR
   2. The user holds a role with tenant-wide contract scope (`tenant_admin`).
-  ```sql
-  EXISTS (
-    SELECT 1 FROM public.user_contracts uc 
-    WHERE uc.user_id = auth.uid() AND uc.contract_id = contracts.id
-  )
-  ```
 
 ### 3.6 Question 6: How is site access enforced?
-- **Answer:** Similar to contracts, site access requires an explicit link in `user_sites` or tenant-wide exemption:
-  ```sql
-  EXISTS (
-    SELECT 1 FROM public.user_sites us 
-    WHERE us.user_id = auth.uid() AND us.site_id = sites.id
-  )
-  ```
+- **Answer:** Similar to contracts, site access requires an explicit link in `user_sites` or tenant-wide exemption.
 
-### 3.7 Question 7: How do tenant administrators gain broader access?
-- **Answer:** Tenant Administrators have an assignment in `user_roles` linking them to the system role `tenant_admin`. Security functions (`auth.is_tenant_admin()`) verify this role and grant tenant-wide scope bypass across all contracts, sites, tools, and observations within their own `tenant_id`.
+### 3.7 Question 7: How is combined contract + site access evaluated?
+- **Answer:** When a user is assigned **BOTH** contracts and sites, access is evaluated as a **strict intersection**:
+  ```sql
+  -- Evaluated via auth.has_operational_scope(contract_id, site_id)
+  -- User must have contract_id in user_contracts AND site_id in user_sites.
+  ```
+  Users with contract scope alone get all sites mapped to that contract. Users with site scope alone get that site under any valid contract. Users with zero scopes get access to nothing (default restricted).
 
 ### 3.8 Question 8: How are platform administrators handled?
 - **Answer:** Platform Administrators have `profiles.is_platform_admin = true`. The security helper functions immediately return `TRUE` for platform administrators, enabling cross-tenant support and global maintenance.
@@ -133,15 +126,25 @@ To ensure clarity and architectural consistency across future development phases
 ### 3.9 Question 9: How will observation access be restricted?
 - **Answer:** Observations are protected by a compound policy:
   1. `tenant_id = auth.current_tenant_id()` (Tenant isolation)
-  2. The user has `observations.read_all` (Tenant Admin / Director), OR
-  3. The user has `observations.read_scoped` AND is assigned to the observation's `contract_id` or `site_id`, OR
-  4. The user has `observations.read_own` AND `observer_id = auth.uid()`.
+  2. AND (
+       `auth.has_permission('observations.read_all')` -- Tenant Admin / Director
+       OR (
+         `auth.has_permission('observations.read_scoped')` 
+         AND `auth.has_operational_scope(observations.contract_id, observations.site_id)`
+       )
+       OR (
+         `auth.has_permission('observations.read_own')` 
+         AND `observer_id = auth.uid()`
+       )
+     )
 
-### 3.10 Question 10: How will tool access be restricted?
+### 3.10 Question 10: How will tool & template access be restricted?
 - **Answer:**
-  - Published tools (`status = 'published'`) are readable by all active users belonging to the tenant.
-  - Draft tools (`status = 'draft'`) are readable and editable only by users holding the `tools.create` or `tools.edit_draft` permission.
-  - Platform templates (`is_template = true` and `tenant_id IS NULL`) are readable across tenants for cloning purposes.
+  - Published tool versions (`status = 'published'`) are readable by all active users in the tenant.
+  - Draft tool versions (`status = 'draft'`) are readable and editable only by users holding `tools.create` or `tools.edit_draft`.
+  - First-class templates in `tool_templates`:
+    - Platform public templates (`tenant_id IS NULL` and `visibility = 'platform_public'`) are readable across all authenticated tenants for adoption.
+    - Tenant templates (`tenant_id` populated) are readable only within the owning tenant.
 
 ---
 
@@ -178,3 +181,19 @@ WITH CHECK (
   AND auth.has_permission('observations.create')
 );
 ```
+
+---
+
+## 5. Phase 0.1 Decisions: Security & RLS
+
+### Decision 1: Scope Intersection in RLS
+- **Decision:** When evaluating observation access for users with both contract and site assignments, RLS enforces an intersection via `auth.has_operational_scope(contract_id, site_id)`.
+- **Reason:** Prevents accidental broad multi-site data exposure.
+- **Deferred:** None.
+- **Implementation Implication (Phase 1):** Implement `auth.has_operational_scope` in PostgreSQL DDL and invoke in the `observations` SELECT and INSERT policies.
+
+### Decision 2: Composite FKs as Second-Line Defense Behind RLS
+- **Decision:** Every relational link between tenant entities uses composite `(tenant_id, id)`.
+- **Reason:** Even if an RLS policy or admin bypass misbehaves, the relational database engine physically prevents cross-tenant record creation.
+- **Deferred:** None.
+- **Implementation Implication (Phase 1):** Write composite foreign key constraints in migration script `001_initial_schema.sql`.

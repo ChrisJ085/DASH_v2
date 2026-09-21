@@ -1,52 +1,70 @@
 # DASH V2 - Role-Based Access Control & Scope Architecture
 
 ## Document Control
-- **Phase:** Phase 0 (Architecture Definition)
-- **Status:** Approved Specification
-- **Core Paradigm:** Separation of Capability (**WHAT**) from Operational Boundary (**WHERE**)
+- **Phase:** Phase 0.1 (Architecture Corrections & Decisions)
+- **Status:** Approved Specification (Supersedes Phase 0 Baseline)
+- **Core Paradigm:** Strict Decoupling of Functional Capability (**WHAT**) from Operational Boundary (**WHERE**)
 
 ---
 
 ## 1. Architectural Philosophy: WHAT vs. WHERE
 
-Traditional RBAC systems suffer from rigidity because they conflate capability with scope (e.g., creating rigid roles like "Chorley Depot MHE Observer"). 
+Traditional enterprise RBAC systems frequently conflate capability with operational scope (e.g., hard-coding roles like "Chorley Depot MHE Observer"). This creates role explosion, brittle access management, and security loopholes when facilities or contracts change.
 
 DASH V2 implements a clean, decoupled two-dimensional authorization architecture:
 
 ```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   TENANT BOUNDARY                                      │
+│               (Hard database siloing via tenant_id - physically non-negotiable)        │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │
+                    ┌───────────────────────┴───────────────────────┐
+                    ▼                                               ▼
 ┌──────────────────────────────────────┐       ┌──────────────────────────────────────┐
 │            WHAT YOU CAN DO           │       │          WHERE YOU CAN DO IT         │
-│          Functional Entitlements     │       │         Operational Boundaries       │
+│         (Functional Permission)      │       │          (Operational Scope)         │
 │                                      │       │                                      │
-│  • roles                             │   x   │  • tenant_id (Mandatory outer silo)  │
-│  • permissions                       │       │  • user_contracts (Commercial scope) │
-│  • role_permissions                  │       │  • user_sites (Geographic scope)     │
-│  • user_roles                        │       │                                      │
+│  "What action is the user allowed   │   x   │  "In which commercial contracts and  │
+│   to execute?"                       │       │   physical sites is the user allowed │
+│                                      │       │   to execute it?"                    │
+│  • roles                             │       │                                      │
+│  • permissions                       │       │  • Tenant-wide (Admin wildcard)      │
+│  • role_permissions                  │       │  • user_contracts (Commercial stream)│
+│  • user_roles                        │       │  • user_sites (Geographic facility)  │
 └──────────────────────────────────────┘       └──────────────────────────────────────┘
 ```
 
 An authenticated user is granted **Permissions** via their assigned **Roles**, but those permissions can only be executed within the **Scopes** (Contracts and Sites) explicitly assigned to that user.
 
+### 1.1 Fundamental Definitions
+- **Permission ("WHAT"):** An atomic system entitlement granting the right to perform a specific action (e.g., `observations.create`, `tools.publish`, `users.invite`, `reports.view`). Permissions are domain-wide and agnostic of location.
+- **Scope ("WHERE"):** The operational boundary restricting where an authorized action may take place. Scope is composed of a Tenant outer silo, combined with explicit Contract and Site assignments.
+
+These two concepts must remain completely separate:
+- A user may have the **permission** `observations.create`.
+- But unless they have **scope** covering Contract $C$ and Site $S$, they are denied from creating an observation at $(C, S)$.
+
 ---
 
 ## 2. Conceptual Roles & Standard Entitlements
 
-While the database model is fully configurable, DASH V2 establishes six canonical conceptual roles to bootstrap the system:
+While the database model is fully configurable, DASH V2 establishes six canonical conceptual roles:
 
 | Conceptual Role | Primary Purpose | Scope Breadth | Default Permissions |
 |---|---|---|---|
-| **Platform Administrator** | Global maintenance & support across tenants | System-wide (cross-tenant) | `*` (All permissions across all tenants) |
-| **Tenant Administrator** | Complete governance of a single tenant organisation | Tenant-wide (all contracts/sites) | Full tenant management, user invites, RBAC, tool publishing, templates |
-| **Contract Manager** | Oversees operations across designated commercial contracts | Multi-contract or specific contracts | View/edit observations, assign contract sites, view contract analytics |
-| **Site Manager** | Oversees operations at designated physical sites | Multi-site or specific sites | View observations at their site, manage site observers, view site dashboards |
-| **Observer** | Completes and submits observations on the shopfloor | Specific assigned sites/contracts | `observations.create`, `observations.read_own`, `tools.read` |
-| **Viewer / Auditor** | Read-only compliance and reporting access | Scoped to designated contracts/sites | `observations.read`, `reports.view`, `reports.export` |
+| **Platform Administrator** | Global maintenance & support across tenants | System-wide (cross-tenant bypass) | `*` (All permissions across all tenants) |
+| **Tenant Administrator** | Complete governance of a single tenant organisation | Tenant-wide wildcard (all contracts/sites) | Full tenant management, user invites, RBAC, tool publishing, templates, audit |
+| **Contract Manager** | Oversees operations across designated commercial contracts | Multi-contract or specific assigned contracts | `observations.read_scoped`, `observations.flag`, `reports.view`, `contract_sites.view` |
+| **Site Manager** | Oversees operations at designated physical sites | Multi-site or specific assigned sites | `observations.read_scoped`, `observations.flag`, `reports.view`, `users.assign_site_observers` |
+| **Observer** | Completes and submits observations on the shopfloor | Strictly assigned contracts and sites | `observations.create`, `observations.read_own`, `tools.read` |
+| **Viewer / Auditor** | Read-only compliance, audit, and reporting access | Scoped to designated contracts/sites | `observations.read_scoped`, `reports.view`, `reports.export` |
 
 ---
 
 ## 3. Atomic Permissions Catalog
 
-Permissions in DASH V2 are expressed in clear dot-notation (`<domain>.<action>`). 
+Permissions in DASH V2 are expressed in dot-notation (`<domain>.<action>`):
 
 ### 3.1 Tenancy & Organisation
 - `tenant.manage_settings` - Configure tenant name, branding, and global settings.
@@ -65,17 +83,17 @@ Permissions in DASH V2 are expressed in clear dot-notation (`<domain>.<action>`)
 - `tools.edit_draft` - Modify sections, questions, and conditional rules of drafts.
 - `tools.publish` - Lock and publish an immutable tool version.
 - `tools.archive` - Archive an existing tool or version.
-- `templates.export` - Mark a tenant tool as an organisation/platform template.
-- `templates.adopt` - Instantiate a new tool from a platform template.
+- `templates.export` - Mark a tool version as an organisation or platform template.
+- `templates.adopt` - Instantiate a new independent tenant tool from a template.
 
 ### 3.4 Observations & Evidence Capture
-- `observations.create` - Initiate and submit an observation within an assigned scope.
+- `observations.create` - Initiate and submit an observation within assigned scope.
 - `observations.read_own` - View observations submitted by oneself.
 - `observations.read_scoped` - View observations submitted by any user within assigned contracts/sites.
 - `observations.read_all` - View all observations across the entire tenant.
-- `observations.edit_in_progress` - Edit an unfinalized observation.
-- `observations.flag` - Flag an observation for safety review or escalate.
-- `observations.delete` - Soft delete an observation record (restricted).
+- `observations.edit_in_progress` - Edit an unfinalized observation draft.
+- `observations.flag` - Flag an observation for safety review or escalation.
+- `observations.delete` - Soft delete an observation record (restricted to tenant admins).
 
 ### 3.5 Analytics & Audit
 - `reports.view` - View aggregate metric dashboards.
@@ -84,104 +102,208 @@ Permissions in DASH V2 are expressed in clear dot-notation (`<domain>.<action>`)
 
 ---
 
-## 4. Operational Scope Resolution Algorithm
+## 4. Operational Scope Semantics (V1 Specification)
 
-When a user attempts an action (for example: `observations.create` at Site $S$ under Contract $C$), the system evaluates access using the following deterministic algorithm:
-
+DASH has this operational hierarchy:
 ```
-                          USER ATTEMPTS ACTION ON (Contract C, Site S)
-                                               │
-                                               ▼
-                              Is user a Platform Administrator?
-                                    ├── YES ──► [ALLOW]
-                                    └── NO
-                                       │
-                                       ▼
-                       Does user's tenant_id match target tenant?
-                                    ├── NO ───► [DENY (Tenant Isolation)]
-                                    └── YES
-                                       │
-                                       ▼
-                  Does user have the required Permission (via user_roles)?
-                                    ├── NO ───► [DENY (Permission Missing)]
-                                    └── YES
-                                       │
-                                       ▼
-                     Is user a Tenant Admin (Tenant-Wide Scope)?
-                                    ├── YES ──► [ALLOW]
-                                    └── NO
-                                       │
-                                       ▼
-             Does user have Scope Access to (Contract C) AND/OR (Site S)?
-                                       │
-             ┌─────────────────────────┴─────────────────────────┐
-             ▼                                                   ▼
-     Contract Check:                                     Site Check:
-     User has user_contracts(C)                          User has user_sites(S)
-             │                                                   │
-             └─────────────────────────┬─────────────────────────┘
-                                       │
-                      Does effective scope satisfy rule?
-                                 ├── YES ──► [ALLOW]
-                                 └── NO ───► [DENY (Out of Scope)]
+Tenant
+  ├── Contracts
+  └── Sites
 ```
+A Site frequently belongs to multiple Contracts via `contract_sites`. For example:
+- **Contract A:** Chorley Hub, Manchester Depot
+- **Contract B:** Chorley Hub, Warrington DC
+- **Contract C:** Manchester Depot
 
-### 4.1 Scope Evaluation Modes
-1. **Strict Intersection (Contract AND Site):** Used when an observation must be certified by a user authorized for both the specific commercial contract and the local facility.
-2. **Flexible Union (Contract OR Site):** Used for site-based observers who work at a facility that serves multiple contracts; assigning the user to Site $S$ authorizes them to complete observations for any contract validly mapped to Site $S$ via `contract_sites`.
-3. **Tenant-Wide Exemption:** Tenant Administrators and Safety Directors hold wildcard scope across all contracts and sites within their tenant.
+### 4.1 The Five Scope Rules
+
+#### Rule 1: Tenant-Wide Access (Tenant Admin Wildcard)
+A Tenant Admin (`roles.code = 'tenant_admin'`) has tenant-wide access to all contracts and sites belonging to their tenant, subject to their permissions. They do not require entries in `user_contracts` or `user_sites`.
+
+#### Rule 2: Contract Scope Alone
+A user assigned to one or more contracts via `user_contracts` (and possessing **NO** entries in `user_sites`) has access to **all sites associated with that contract** through `contract_sites`.
+- *Example:* User has `Contract A`. Contract A is mapped to Chorley Hub and Manchester Depot. The user can access both Chorley Hub and Manchester Depot under Contract A.
+
+#### Rule 3: Site Scope Alone
+A user assigned directly to one or more sites via `user_sites` (and possessing **NO** entries in `user_contracts`) has access to **those assigned sites under any contract validly associated with those sites**.
+- *Example:* User has `Site = Chorley Hub`. Chorley Hub is mapped to Contract A and Contract B. The user can access Chorley Hub under Contract A and under Contract B.
+
+#### Rule 4: Combined Contract + Site Scope (Strict Intersection)
+**CRITICAL ARCHITECTURAL RULE:** Where a user has **BOTH** contract assignments (`user_contracts`) **AND** site assignments (`user_sites`), their access is evaluated as an **INTERSECTION (RESTRICTION)**, not a union.
+- A user with both assignments can **ONLY** access the designated Site when acting under the designated Contract.
+- They do **NOT** receive access to all sites under the contract.
+- They do **NOT** receive access to that site under other contracts.
+
+#### Rule 5: Default Restricted (No Scope Assigned)
+If a non-admin user has zero entries in `user_contracts` and zero entries in `user_sites`, they have access to **NO contracts and NO sites**. They cannot view or create any observations until an administrator explicitly assigns scopes.
 
 ---
 
-## 5. PostgreSQL & RLS Security Helper Functions
+## 5. Concrete Scope Scenarios & Examples
 
-To enforce RBAC without code duplication and without round-tripping to the client, the following PostgreSQL helper functions are defined in the schema:
+To prevent any ambiguity during implementation, consider the following enterprise setup:
 
-### 5.1 `auth.current_tenant_id()`
-Returns the `tenant_id` of the current authenticated user session from `profiles`:
-```sql
-CREATE OR REPLACE FUNCTION auth.current_tenant_id()
-RETURNS UUID AS $$
-  SELECT tenant_id FROM public.profiles WHERE id = auth.uid() AND deleted_at IS NULL;
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+- **Tenant:** Example Logistics UK
+- **Contracts:**
+  - `Contract A` (Retail Stream)
+  - `Contract B` (Industrial Stream)
+- **Sites:**
+  - `Chorley Hub` (Mapped to Contract A and Contract B via `contract_sites`)
+  - `Manchester Depot` (Mapped to Contract A only via `contract_sites`)
+  - `Warrington DC` (Mapped to Contract B only via `contract_sites`)
+
+### Comparison Matrix
+
+| User Profile | Assigned Scopes | Can Access: (Contract A, Chorley)? | Can Access: (Contract A, Manchester)? | Can Access: (Contract B, Chorley)? | Can Access: (Contract B, Warrington)? | Detailed Architectural Explanation |
+|---|---|---|---|---|---|---|
+| **User 1 (Combined Scope)** | `Contract A` + `Site Chorley` | **YES** | **NO** | **NO** | **NO** | **Strict Intersection:** Must satisfy BOTH Contract A AND Site Chorley. Cannot access Manchester (out of site scope) or Contract B Chorley (out of contract scope). |
+| **User 2 (Contract Only)** | `Contract A` | **YES** | **YES** | **NO** | **NO** | **Contract Scope:** Can access all sites mapped to Contract A (Chorley and Manchester). Cannot access Contract B. |
+| **User 3 (Site Only)** | `Site Chorley` | **YES** | **NO** | **YES** | **NO** | **Site Scope:** Can access Chorley under any valid contract (Contract A and Contract B). Cannot access Manchester or Warrington. |
+| **User 4 (Multi-Combined)** | `Contract A` + `Sites Chorley, Manchester` | **YES** | **YES** | **NO** | **NO** | Intersects Contract A with both sites; permitted for both under Contract A only. |
+| **User 5 (Unassigned)** | None | **NO** | **NO** | **NO** | **NO** | **Default Restricted:** Zero access until explicitly provisioned by an administrator. |
+| **Tenant Admin** | None needed (Admin role) | **YES** | **YES** | **YES** | **YES** | **Tenant Wildcard:** Tenant Admin role bypasses specific contract/site filters across the tenant. |
+
+---
+
+## 6. Scope Resolution Algorithm & RLS Implementation
+
+When a user executes an operation on target `(contract_id, site_id)` within `tenant_id`:
+
+```
+                           USER ATTEMPTS ACTION ON (Contract C, Site S)
+                                                │
+                                                ▼
+                               Is user a Platform Administrator?
+                                     ├── YES ──► [ALLOW (Cross-Tenant Maintenance)]
+                                     └── NO
+                                        │
+                                        ▼
+                        Does user's tenant_id match target tenant?
+                                     ├── NO ───► [DENY (Tenant Isolation)]
+                                     └── YES
+                                        │
+                                        ▼
+                   Does user have the required Permission (via user_roles)?
+                                     ├── NO ───► [DENY (Permission Missing)]
+                                     └── YES
+                                        │
+                                        ▼
+                 Is (Contract C, Site S) a valid pair in contract_sites?
+                                     ├── NO ───► [DENY (Invalid Contract-Site Binding)]
+                                     └── YES
+                                        │
+                                        ▼
+                      Is user a Tenant Admin (Tenant-Wide Scope)?
+                                     ├── YES ──► [ALLOW (Admin Wildcard)]
+                                     └── NO
+                                        │
+                                        ▼
+                          Evaluate User Scopes (C, S):
+                                        │
+               ┌────────────────────────┼────────────────────────┐
+               │                        │                        │
+       Has user_contracts?      Has user_sites?          Has BOTH?
+       (user_sites is EMPTY)    (user_contracts EMPTY)   (Both non-empty)
+               │                        │                        │
+               ▼                        ▼                        ▼
+       Is C in user_contracts?  Is S in user_sites?      Is C in user_contracts
+          ├── YES ──► [ALLOW]      ├── YES ──► [ALLOW]   AND S in user_sites?
+          └── NO ───► [DENY]       └── NO ───► [DENY]       ├── YES ──► [ALLOW (Intersection)]
+                                                            └── NO ───► [DENY]
 ```
 
-### 5.2 `auth.has_permission(required_permission TEXT)`
-Verifies if the current user possesses an active permission through any assigned role:
+### 6.1 PostgreSQL Helper Function Specification for RLS
+
+Phase 1 will implement this helper function in PostgreSQL:
+
 ```sql
-CREATE OR REPLACE FUNCTION auth.has_permission(required_permission TEXT)
+CREATE OR REPLACE FUNCTION auth.has_operational_scope(target_contract_id UUID, target_site_id UUID)
 RETURNS BOOLEAN AS $$
+DECLARE
+  v_is_platform_admin BOOLEAN;
+  v_is_tenant_admin BOOLEAN;
+  v_has_any_contract_assignment BOOLEAN;
+  v_has_any_site_assignment BOOLEAN;
+  v_contract_matched BOOLEAN;
+  v_site_matched BOOLEAN;
+BEGIN
+  -- 1. Platform Admin bypass
+  SELECT is_platform_admin INTO v_is_platform_admin 
+  FROM public.profiles WHERE id = auth.uid() AND deleted_at IS NULL;
+  IF v_is_platform_admin IS TRUE THEN
+    RETURN TRUE;
+  END IF;
+
+  -- 2. Tenant Admin bypass
   SELECT EXISTS (
-    SELECT 1 
-    FROM public.user_roles ur
-    JOIN public.role_permissions rp ON rp.role_id = ur.role_id
-    JOIN public.permissions p ON p.id = rp.permission_id
-    WHERE ur.user_id = auth.uid()
-      AND p.code = required_permission
-  ) OR EXISTS (
-    SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_platform_admin = true
-  );
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+    SELECT 1 FROM public.user_roles ur
+    JOIN public.roles r ON r.id = ur.role_id
+    WHERE ur.user_id = auth.uid() AND r.code = 'tenant_admin'
+  ) INTO v_is_tenant_admin;
+  IF v_is_tenant_admin IS TRUE THEN
+    RETURN TRUE;
+  END IF;
+
+  -- 3. Verify valid contract-site relationship exists in tenant
+  IF NOT EXISTS (
+    SELECT 1 FROM public.contract_sites cs
+    WHERE cs.contract_id = target_contract_id 
+      AND cs.site_id = target_site_id
+      AND cs.deleted_at IS NULL
+  ) THEN
+    RETURN FALSE;
+  END IF;
+
+  -- 4. Check user assignments
+  SELECT EXISTS (SELECT 1 FROM public.user_contracts WHERE user_id = auth.uid()) INTO v_has_any_contract_assignment;
+  SELECT EXISTS (SELECT 1 FROM public.user_sites WHERE user_id = auth.uid()) INTO v_has_any_site_assignment;
+
+  -- If user has no scope assignments whatsoever -> DEFAULT RESTRICTED
+  IF NOT v_has_any_contract_assignment AND NOT v_has_any_site_assignment THEN
+    RETURN FALSE;
+  END IF;
+
+  SELECT EXISTS (SELECT 1 FROM public.user_contracts WHERE user_id = auth.uid() AND contract_id = target_contract_id) INTO v_contract_matched;
+  SELECT EXISTS (SELECT 1 FROM public.user_sites WHERE user_id = auth.uid() AND site_id = target_site_id) INTO v_site_matched;
+
+  -- Case A: User has BOTH Contract and Site restrictions -> INTERSECTION
+  IF v_has_any_contract_assignment AND v_has_any_site_assignment THEN
+    RETURN (v_contract_matched AND v_site_matched);
+  END IF;
+
+  -- Case B: User has Contract restrictions ONLY
+  IF v_has_any_contract_assignment AND NOT v_has_any_site_assignment THEN
+    RETURN v_contract_matched;
+  END IF;
+
+  -- Case C: User has Site restrictions ONLY
+  IF NOT v_has_any_contract_assignment AND v_has_any_site_assignment THEN
+    RETURN v_site_matched;
+  END IF;
+
+  RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER;
 ```
 
-### 5.3 `auth.has_site_scope(target_site_id UUID)`
-Verifies if the user is authorized to act upon a specific site:
-```sql
-CREATE OR REPLACE FUNCTION auth.has_site_scope(target_site_id UUID)
-RETURNS BOOLEAN AS $$
-  SELECT (
-    -- Platform Admin bypass
-    EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_platform_admin = true)
-    -- Tenant Admin bypass
-    OR EXISTS (
-      SELECT 1 FROM public.user_roles ur 
-      JOIN public.roles r ON r.id = ur.role_id 
-      WHERE ur.user_id = auth.uid() AND r.code = 'tenant_admin'
-    )
-    -- Explicit user_sites assignment
-    OR EXISTS (
-      SELECT 1 FROM public.user_sites WHERE user_id = auth.uid() AND site_id = target_site_id
-    )
-  );
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
-```
+---
+
+## 7. Phase 0.1 Decisions: Access Scope & RBAC
+
+### Decision 1: WHAT vs. WHERE Strict Separation
+- **Decision:** Roles and permissions exclusively define functional capability. Contract and site assignments exclusively define operational scope.
+- **Reason:** Eliminates combinatorial role explosion and keeps role assignments intact when users transfer between sites or contracts.
+- **Deferred:** Custom field-level attribute-based access control (ABAC) is deferred to future enterprise extensions.
+- **Implementation Implication (Phase 1):** Create `roles`, `permissions`, `role_permissions`, `user_roles`, `user_contracts`, and `user_sites` with composite foreign keys.
+
+### Decision 2: Combined Scope Treated as Strict Intersection
+- **Decision:** When a user is assigned both contracts and sites, access requires satisfying BOTH conditions.
+- **Reason:** Prevents accidental broad access. An auditor or observer assigned to a national contract for a single local depot must not gain access to all depots nationally.
+- **Deferred:** Flexible user-configurable toggle between Union and Intersection per user is deferred as unnecessary complexity for V1.
+- **Implementation Implication (Phase 1):** Embed the intersection logic in `auth.has_operational_scope()` and all RLS policies on `observations`.
+
+### Decision 3: Default Restricted Access
+- **Decision:** Non-admin users without scope assignments have access to 0 contracts and 0 sites.
+- **Reason:** Adheres to enterprise zero-trust security.
+- **Deferred:** None.
+- **Implementation Implication (Phase 1):** Automated tests must assert that a user with roles but no scope assignments receives empty result sets.
