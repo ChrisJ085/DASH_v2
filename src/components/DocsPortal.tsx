@@ -19,18 +19,37 @@ import {
   MapPin,
   Briefcase,
   ExternalLink,
-  Info
+  Info,
+  Smartphone,
+  ClipboardList,
+  KeyRound,
+  UserCheck,
+  ChevronLeft,
+  ChevronRight,
+  Menu,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen
 } from 'lucide-react';
 import { SCHEMA_TABLES } from '../data/architecture-specs';
 import ToolBuilder from './ToolBuilder';
+import ObservationRunner from './ObservationRunner';
+import ObservationList from './ObservationList';
+import { SiteAreaManager } from './SiteAreaManager';
+import ColleagueManager from './ColleagueManager';
+import InvitationCodeManager from './InvitationCodeManager';
+import { TenantDetailModal } from './TenantDetailModal';
 
-type ActiveTab = 'overview' | 'team' | 'roles' | 'tools' | 'rls' | 'architecture';
+type ActiveTab = 'overview' | 'team' | 'invitation-codes' | 'roles' | 'colleagues' | 'tools' | 'runner' | 'records' | 'rls' | 'architecture';
 
 export default function DocsPortal() {
-  const { profile, tenant, loading, error, refreshProfile, signOut, hasPermission, hasOperationalScope } = useAuth();
+  const { user, profile, tenant, loading, error, refreshProfile, signOut, hasPermission, hasOperationalScope } = useAuth();
 
   // Navigation and active states
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [showTenantDetailModal, setShowTenantDetailModal] = useState<boolean>(false);
 
   // NEW Phase 3 Authorization & Scope UI states
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
@@ -367,6 +386,9 @@ export default function DocsPortal() {
   // Tenant Setup (Bootstrap) Form States
   const [bootstrapOrgName, setBootstrapOrgName] = useState('');
   const [bootstrapAdminName, setBootstrapAdminName] = useState('');
+  const [bootstrapInviteCode, setBootstrapInviteCode] = useState<string>(
+    localStorage.getItem('dash_pending_invite_code') || (user?.user_metadata?.invitation_code as string) || ''
+  );
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
@@ -394,8 +416,10 @@ export default function DocsPortal() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState('observer');
+  const [customTempPass, setCustomTempPass] = useState('');
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
+  const [provisionedDetails, setProvisionedDetails] = useState<{ email: string; tempPass: string } | null>(null);
 
   // Architecture Spec Helpers
   const [selectedCluster, setSelectedCluster] = useState<string>('All');
@@ -478,10 +502,14 @@ export default function DocsPortal() {
     try {
       const { data: tenantId, error: rpcError } = await supabase.rpc('bootstrap_tenant', {
         p_tenant_name: bootstrapOrgName,
-        p_admin_name: bootstrapAdminName
+        p_admin_name: bootstrapAdminName,
+        p_invitation_code: bootstrapInviteCode.trim().toUpperCase()
       });
 
       if (rpcError) throw rpcError;
+
+      // Clean up localStorage invitation code key
+      localStorage.removeItem('dash_pending_invite_code');
 
       // Force profile and tenant context state refresh instantly
       await refreshProfile();
@@ -546,27 +574,35 @@ export default function DocsPortal() {
     }
   };
 
-  // Handle Invite Team Member (Secure Server-Side Edge Function Flow)
+  // Handle Provision Team Member (Secure Server-Side Edge Function Flow)
   const handleInviteUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setInviteError(null);
     setInviteSuccess(null);
+    setProvisionedDetails(null);
 
     if (!profile?.tenant_id) return;
 
     try {
       // Calls the secure server-side Edge Function
-      const result = await inviteUser(inviteEmail, inviteName, inviteRole);
+      const result = await inviteUser(inviteEmail, inviteName, inviteRole, customTempPass || undefined);
 
       if (result.success) {
-        setInviteSuccess(`Invitation successfully sent to ${inviteEmail}! Profile provisioned under "${inviteRole}" role.`);
+        setInviteSuccess(`Account for ${inviteEmail} successfully provisioned under "${inviteRole}" role!`);
+        if (result.tempPassword) {
+          setProvisionedDetails({
+            email: result.email || inviteEmail,
+            tempPass: result.tempPassword
+          });
+        }
         setInviteEmail('');
         setInviteName('');
+        setCustomTempPass('');
         await fetchTenantData();
       }
     } catch (err: any) {
       const errMsg = err.message || '';
-      console.warn('Invitation attempt failed:', err);
+      console.warn('Provisioning attempt failed:', err);
       
       // Check if the edge function is simply not deployed yet to the active Supabase project
       if (
@@ -576,9 +612,7 @@ export default function DocsPortal() {
         errMsg.includes('Failed to fetch')
       ) {
         setInviteError(
-          `The client successfully initiated a secure, zero-trust invitation request, but the server-side Edge Function is not deployed or configured in your active Supabase project. To resolve this, run:\n\n` +
-          `  supabase functions deploy invite-user\n\n` +
-          `in your local terminal. This ensures that administrative invitations remain fully server-side without exposing service-role secrets in the client.`
+          `The client successfully initiated a secure, zero-trust provisioning request, but the server-side Edge Function is not deployed or configured in your active Supabase project. To resolve this, deploy the "invite-user" function in your Supabase Dashboard or CLI.`
         );
       } else {
         setInviteError(errMsg);
@@ -621,6 +655,22 @@ export default function DocsPortal() {
           )}
 
           <form onSubmit={handleBootstrap} className="space-y-4">
+            {!bootstrapInviteCode && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">Invitation Code</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="e.g. GXO-VIP-2026"
+                    value={bootstrapInviteCode}
+                    onChange={(e) => setBootstrapInviteCode(e.target.value.toUpperCase())}
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm font-mono font-bold tracking-wider uppercase focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all"
+                  />
+                  <KeyRound className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
+                </div>
+              </div>
+            )}
+
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-700 block">Organisation / Tenant Name</label>
               <input
@@ -681,81 +731,310 @@ export default function DocsPortal() {
     );
   }
 
+  const isChrisJeal = 
+    user?.id === 'a48717fd-4c63-43cb-a8f9-0a5de2c4fe0f' || 
+    profile?.id === 'a48717fd-4c63-43cb-a8f9-0a5de2c4fe0f' ||
+    user?.email?.toLowerCase() === 'chris.jeal@gxo.com' ||
+    profile?.email?.toLowerCase() === 'chris.jeal@gxo.com' ||
+    profile?.email?.toLowerCase() === 'cjeal85@gmail.com';
+
+  // If a user navigates to invitation-codes tab but is not authorized, reset to overview
+  useEffect(() => {
+    if (activeTab === 'invitation-codes' && !isChrisJeal) {
+      setActiveTab('overview');
+    }
+  }, [activeTab, isChrisJeal]);
+
+  // Navigation Sections for Sidebar
+  const navSections = [
+    {
+      title: 'Tenancy & Core',
+      items: [
+        { id: 'overview', label: 'Tenant Overview', icon: Building2 },
+        ...(isChrisJeal ? [{ id: 'invitation-codes', label: 'Invitation Codes', icon: KeyRound }] : []),
+        { id: 'team', label: 'Team & Invitations', icon: Users },
+        { id: 'roles', label: 'Roles & Permissions', icon: Lock },
+        { id: 'colleagues', label: 'Colleagues & Operators', icon: UserCheck }
+      ]
+    },
+    {
+      title: 'Observation Engine',
+      items: [
+        { id: 'tools', label: 'Tool Builder', icon: Layers },
+        { id: 'runner', label: 'Mobile Capture', icon: Smartphone },
+        { id: 'records', label: 'Observation Records', icon: ClipboardList }
+      ]
+    },
+    {
+      title: 'Platform & Security',
+      items: [
+        { id: 'rls', label: 'Database Security', icon: ShieldCheck },
+        { id: 'architecture', label: 'Architecture Specs', icon: FileText }
+      ]
+    }
+  ];
+
   // SCREEN B: Main Authenticated Dashboard Shell
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Upper Navigation & Shell Header */}
-      <header className="border-b border-slate-200 bg-white sticky top-0 z-40 shadow-2xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            {/* Logo */}
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center text-white font-black text-lg tracking-wider shadow-sm">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row font-sans selection:bg-indigo-100 selection:text-indigo-900">
+      
+      {/* DESKTOP COLLAPSIBLE SIDEBAR */}
+      <aside
+        className={`hidden md:flex flex-col bg-slate-900 text-slate-300 sticky top-0 h-screen transition-all duration-300 z-30 shrink-0 border-r border-slate-800 ${
+          isSidebarCollapsed ? 'w-20' : 'w-64'
+        }`}
+      >
+        {/* Sidebar Header */}
+        <div className="h-16 px-4 flex items-center justify-between border-b border-slate-800/80">
+          {!isSidebarCollapsed ? (
+            <div className="flex items-center space-x-3 overflow-hidden">
+              <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-black text-base tracking-wider shadow-md shrink-0">
                 D2
               </div>
-              <div>
-                <div className="flex items-center space-x-2">
-                  <h1 className="text-base font-bold tracking-tight text-slate-900">DASH V2</h1>
-                  <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    Phase 2 Core Active
+              <div className="truncate">
+                <div className="flex items-center space-x-1.5">
+                  <h1 className="text-sm font-bold tracking-tight text-white">DASH V2</h1>
+                  <span className="px-1.5 py-0.2 text-[9px] font-bold rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                    Phase 2
                   </span>
                 </div>
-                <p className="text-[10px] text-slate-500">
-                  Secure Tenant: <span className="font-semibold text-slate-700">{tenant?.name || 'Loading...'}</span>
+                <p className="text-[10px] text-slate-400 truncate">
+                  {tenant?.name || 'Tenant Platform'}
                 </p>
               </div>
             </div>
+          ) : (
+            <div className="mx-auto w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white font-black text-base tracking-wider shadow-md">
+              D2
+            </div>
+          )}
 
-            {/* User Metadata, Shell Context, and Logout */}
-            <div className="flex items-center space-x-4 text-xs">
-              <div className="hidden md:flex flex-col items-end">
-                <span className="font-semibold text-slate-900">{profile?.full_name}</span>
-                <span className="text-[10px] text-slate-400">{profile?.email}</span>
+          <button
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer shrink-0 ml-1"
+            title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {isSidebarCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
+          </button>
+        </div>
+
+        {/* Sidebar Navigation Items */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
+          {navSections.map((section, sIdx) => (
+            <div key={sIdx} className="space-y-1">
+              {!isSidebarCollapsed && (
+                <h3 className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">
+                  {section.title}
+                </h3>
+              )}
+              <div className="space-y-1">
+                {section.items.map(item => {
+                  const Icon = item.icon;
+                  const isActive = activeTab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => setActiveTab(item.id as ActiveTab)}
+                      title={isSidebarCollapsed ? item.label : undefined}
+                      className={`w-full flex items-center transition-all cursor-pointer rounded-xl font-medium text-xs ${
+                        isSidebarCollapsed
+                          ? 'justify-center p-3'
+                          : 'px-3 py-2.5 justify-start'
+                      } ${
+                        isActive
+                          ? 'bg-indigo-600 text-white font-bold shadow-md shadow-indigo-900/40'
+                          : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
+                      }`}
+                    >
+                      <Icon className={`shrink-0 ${isSidebarCollapsed ? 'w-5 h-5' : 'w-4 h-4 mr-3'} ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                      {!isSidebarCollapsed && (
+                        <span className="truncate">{item.label}</span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
-              <div className="h-8 w-px bg-slate-200 hidden md:block"></div>
+            </div>
+          ))}
+        </nav>
+
+        {/* Sidebar Footer User Info */}
+        <div className="p-3 border-t border-slate-800/80 bg-slate-950/40">
+          {!isSidebarCollapsed ? (
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 pr-2">
+                <p className="text-xs font-bold text-white truncate">{profile?.full_name}</p>
+                <p className="text-[10px] text-slate-400 truncate">{profile?.email}</p>
+              </div>
               <button
                 onClick={() => signOut()}
-                className="inline-flex items-center justify-center px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg font-medium cursor-pointer transition-colors space-x-1.5"
+                className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                title="Sign Out"
               >
-                <LogOut className="w-3.5 h-3.5 text-slate-400" />
-                <span>Sign Out</span>
+                <LogOut className="w-4 h-4" />
               </button>
             </div>
-          </div>
+          ) : (
+            <button
+              onClick={() => signOut()}
+              className="w-full flex items-center justify-center p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+              title="Sign Out"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+      </aside>
 
-          {/* Module Tabs Navigation */}
-          <nav className="flex space-x-1 overflow-x-auto py-1 border-t border-slate-100" aria-label="Dashboard views">
-            {[
-              { id: 'overview', label: 'Tenant Overview', icon: Building2 },
-              { id: 'team', label: 'Team & Invitations', icon: Users },
-              { id: 'roles', label: 'Roles & Permissions', icon: Lock },
-              { id: 'tools', label: 'Tool Builder', icon: Layers },
-              { id: 'rls', label: 'Database Security', icon: ShieldCheck },
-              { id: 'architecture', label: 'Architecture Specifications', icon: FileText }
-            ].map(tab => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as ActiveTab)}
-                  className={`flex items-center px-4 py-2.5 text-xs font-semibold rounded-md whitespace-nowrap transition-colors cursor-pointer ${
-                    isActive
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 mr-2" />
-                  {tab.label}
-                </button>
-              );
-            })}
-          </nav>
+      {/* MOBILE TOP BAR */}
+      <header className="md:hidden sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => setIsMobileMenuOpen(true)}
+            className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+          >
+            <Menu className="w-6 h-6" />
+          </button>
+          <div className="flex items-center space-x-2">
+            <div className="w-7 h-7 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black text-xs">
+              D2
+            </div>
+            <span className="font-bold text-sm">DASH V2</span>
+          </div>
+        </div>
+        <div className="flex items-center space-x-2">
+          <span className="text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full">
+            {tenant?.name || 'Tenant'}
+          </span>
+          <button
+            onClick={() => signOut()}
+            className="p-1.5 text-slate-400 hover:text-white cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      {/* MOBILE DRAWER OVERLAY */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex">
+          <div
+            className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+          <div className="relative flex-1 max-w-xs w-full bg-slate-900 text-slate-300 flex flex-col h-full z-10 shadow-2xl">
+            <div className="p-4 flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center space-x-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black text-sm">
+                  D2
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-white">DASH V2</h2>
+                  <p className="text-[10px] text-slate-400">{tenant?.name}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <nav className="flex-1 overflow-y-auto p-4 space-y-6">
+              {navSections.map((section, sIdx) => (
+                <div key={sIdx} className="space-y-2">
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 px-2">
+                    {section.title}
+                  </h3>
+                  <div className="space-y-1">
+                    {section.items.map(item => {
+                      const Icon = item.icon;
+                      const isActive = activeTab === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          onClick={() => {
+                            setActiveTab(item.id as ActiveTab);
+                            setIsMobileMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center px-3 py-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                            isActive
+                              ? 'bg-indigo-600 text-white shadow-md'
+                              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                          }`}
+                        >
+                          <Icon className="w-4 h-4 mr-3" />
+                          <span>{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </nav>
+
+            <div className="p-4 border-t border-slate-800 bg-slate-950/50 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold text-white">{profile?.full_name}</p>
+                <p className="text-[10px] text-slate-400">{profile?.email}</p>
+              </div>
+              <button
+                onClick={() => signOut()}
+                className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MAIN WORKSPACE CONTENT SHELL */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Workspace Top Header */}
+        <header className="hidden md:flex bg-white border-b border-slate-200 px-6 py-3.5 items-center justify-between sticky top-0 z-20 shadow-2xs">
+          <div className="flex items-center space-x-3">
+            {/* Active view breadcrumb title */}
+            {(() => {
+              const activeItem = navSections.flatMap(s => s.items).find(i => i.id === activeTab);
+              const Icon = activeItem?.icon || Building2;
+              return (
+                <div className="flex items-center space-x-2.5">
+                  <div className="p-2 bg-indigo-50 text-indigo-700 rounded-lg">
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold text-slate-900">{activeItem?.label}</h2>
+                    <span className="text-[10px] text-slate-400 font-medium">
+                      Tenant Workspace &bull; {tenant?.name || 'Active Tenant'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="flex items-center space-x-4 text-xs">
+            <span className="px-2.5 py-1 text-[11px] font-semibold rounded-full bg-slate-100 text-slate-700 border border-slate-200 flex items-center">
+              <span className="w-2 h-2 rounded-full bg-green-500 mr-1.5 animate-pulse" />
+              {tenant?.name || 'Active Tenant'}
+            </span>
+            <div className="h-6 w-px bg-slate-200" />
+            <div className="flex items-center space-x-2">
+              <div className="w-7 h-7 rounded-full bg-slate-900 text-white font-bold flex items-center justify-center text-xs">
+                {profile?.full_name?.charAt(0) || 'U'}
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="font-bold text-slate-800 leading-none">{profile?.full_name}</span>
+                <span className="text-[10px] text-slate-400 leading-tight">{profile?.email}</span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Container */}
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
         
         {/* TAB 1: Tenant Overview & Scope Foundations */}
         {activeTab === 'overview' && (
@@ -771,9 +1050,19 @@ export default function DocsPortal() {
                     <h3 className="text-sm font-bold uppercase tracking-wider text-slate-400">Organisation Context</h3>
                     <h2 className="text-lg font-bold text-slate-900">{tenant?.name}</h2>
                   </div>
-                  <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 capitalize">
-                    {tenant?.status}
-                  </span>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowTenantDetailModal(true)}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center space-x-1.5 cursor-pointer transition-colors shadow-3xs"
+                    >
+                      <Building2 className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Company & Tenant Details</span>
+                    </button>
+                    <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 capitalize">
+                      {tenant?.status}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 text-xs">
@@ -947,7 +1236,36 @@ export default function DocsPortal() {
               </div>
 
             </div>
+
+            {/* Site Areas & Operation Types Management */}
+            {sites.length > 0 && profile?.tenant_id && (
+              <div className="col-span-1 lg:col-span-3 pt-2">
+                <SiteAreaManager
+                  tenantId={profile.tenant_id}
+                  sites={sites}
+                />
+              </div>
+            )}
+
+            {/* Tenant and Company Details Modal */}
+            {showTenantDetailModal && (
+              <TenantDetailModal
+                tenant={tenant}
+                contractsCount={contracts.length}
+                sitesCount={sites.length}
+                canEdit={hasPermission('tenant.manage_settings') || isChrisJeal}
+                onClose={() => setShowTenantDetailModal(false)}
+                onTenantUpdated={() => {
+                  refreshProfile();
+                }}
+              />
+            )}
           </div>
+        )}
+
+        {/* TAB: Tenant Registration Invitation Codes */}
+        {activeTab === 'invitation-codes' && isChrisJeal && (
+          <InvitationCodeManager />
         )}
 
         {/* TAB 2: Team Management & Invitations */}
@@ -1244,26 +1562,67 @@ export default function DocsPortal() {
                   </div>
                 </div>
               ) : (
-                /* Send Invitation Form */
+                /* Account Provisioning Form */
                 <>
                   <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-5 text-xs text-indigo-900 space-y-2">
                     <div className="flex items-center space-x-2">
                       <UserPlus className="w-4 h-4 text-indigo-600" />
-                      <span className="font-bold">Invitation Flow Verification</span>
+                      <span className="font-bold">Direct Account Provisioning</span>
                     </div>
                     <p className="leading-relaxed">
-                      Inviting a user assigns them directly to your tenant's context inside the database. Real deployments trigger email links using Supabase Auth.
+                      Provision a new user account directly with a temporary password. You can copy the login details and email them to the user. The user will be required to change their password upon initial sign in.
                     </p>
                     <p className="text-[9px] text-indigo-700 italic">
                       💡 Click on any user profile on the left to manage their Roles, Scopes, and Status.
                     </p>
                   </div>
 
-                  {/* Invite Form */}
+                  {/* Provision Form */}
                   <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Invite Team Member</h3>
-                    {inviteError && <p className="text-[10px] text-red-600">{inviteError}</p>}
-                    {inviteSuccess && <p className="text-[10px] text-emerald-600">{inviteSuccess}</p>}
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Provision New User Account</h3>
+                    {inviteError && <p className="text-[10px] text-red-600 font-medium">{inviteError}</p>}
+                    {inviteSuccess && <p className="text-[10px] text-emerald-600 font-medium">{inviteSuccess}</p>}
+
+                    {/* Temporary Password Callout Box */}
+                    {provisionedDetails && (
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <KeyRound className="w-4 h-4 text-amber-600" />
+                            <span className="text-xs font-bold text-amber-900">Temporary Account Credentials</span>
+                          </div>
+                          <span className="px-2 py-0.5 bg-amber-200/60 text-amber-900 rounded text-[9px] font-semibold uppercase tracking-wider">
+                            Must change on login
+                          </span>
+                        </div>
+
+                        <div className="space-y-1.5 text-xs">
+                          <div className="flex justify-between items-center bg-white p-2 border border-amber-200/80 rounded-lg">
+                            <span className="text-slate-500 font-medium">Email:</span>
+                            <span className="font-mono font-bold text-slate-900">{provisionedDetails.email}</span>
+                          </div>
+                          <div className="flex justify-between items-center bg-white p-2 border border-amber-200/80 rounded-lg">
+                            <span className="text-slate-500 font-medium">Temp Password:</span>
+                            <div className="flex items-center space-x-2">
+                              <span className="font-mono font-bold text-amber-900 select-all">{provisionedDetails.tempPass}</span>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(`Email: ${provisionedDetails.email}\nTemporary Password: ${provisionedDetails.tempPass}`);
+                                  alert('Account details copied to clipboard!');
+                                }}
+                                className="px-2 py-1 bg-slate-900 text-white rounded text-[10px] font-semibold hover:bg-slate-800 transition-colors cursor-pointer"
+                              >
+                                Copy Info
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-amber-800 leading-tight">
+                          Email these credentials directly to the new user. They will be prompted to set a permanent password upon logging in.
+                        </p>
+                      </div>
+                    )}
                     
                     <form onSubmit={handleInviteUser} className="space-y-3">
                       <div className="space-y-1">
@@ -1301,11 +1660,25 @@ export default function DocsPortal() {
                           <option value="viewer">Viewer / compliance</option>
                         </select>
                       </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-500">Custom Temporary Password (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="Leave blank to auto-generate secure password"
+                          value={customTempPass}
+                          onChange={(e) => setCustomTempPass(e.target.value)}
+                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-slate-900 font-mono"
+                          minLength={8}
+                        />
+                        <p className="text-[9px] text-slate-400">Minimum 8 characters. An auto-generated secure password will be created if omitted.</p>
+                      </div>
+
                       <button
                         type="submit"
-                        className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                        className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer transition-colors mt-2"
                       >
-                        Send Invitation
+                        Provision Account & Generate Temporary Password
                       </button>
                     </form>
                   </div>
@@ -1718,9 +2091,24 @@ export default function DocsPortal() {
           </div>
         )}
 
+        {/* TAB 4: Colleagues & Operators Management */}
+        {activeTab === 'colleagues' && profile?.tenant_id && (
+          <ColleagueManager tenantId={profile.tenant_id} />
+        )}
+
         {/* TAB 5: Tool Builder */}
         {activeTab === 'tools' && (
           <ToolBuilder />
+        )}
+
+        {/* TAB 6: Mobile Capture Engine */}
+        {activeTab === 'runner' && (
+          <ObservationRunner onComplete={() => setActiveTab('records')} />
+        )}
+
+        {/* TAB 7: Observation Records */}
+        {activeTab === 'records' && (
+          <ObservationList />
         )}
 
       </main>
@@ -1729,6 +2117,7 @@ export default function DocsPortal() {
       <footer className="mt-auto border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-400">
         DASH V2 Behavioural Observation Platform &bull; Phase 2 Auth & Tenancy Core Verified &bull; Supabase Zero-Trust
       </footer>
+      </div>
     </div>
   );
 }

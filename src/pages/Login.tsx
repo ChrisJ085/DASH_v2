@@ -1,13 +1,15 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { Layers, ShieldAlert, CheckCircle2, Building2 } from 'lucide-react';
+import { Layers, ShieldAlert, CheckCircle2, Building2, KeyRound } from 'lucide-react';
+import { validateInvitationCode } from '../lib/invitation-code-service';
 
 export const Login = () => {
   const [isRegisterOrg, setIsRegisterOrg] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [invitationCode, setInvitationCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -21,6 +23,24 @@ export const Login = () => {
 
     try {
       if (isRegisterOrg) {
+        // Enforce invitation code unless registering user is chris.jeal@gxo.com
+        if (email.trim().toLowerCase() !== 'chris.jeal@gxo.com') {
+          if (!invitationCode.trim()) {
+            throw new Error('An Invitation Code is required. Tenant creation is strictly restricted by invitation only.');
+          }
+
+          // Validate code against database
+          const valRes = await validateInvitationCode(invitationCode);
+          if (!valRes.valid) {
+            throw new Error(valRes.message);
+          }
+        }
+
+        // Save invitation code to localStorage so Screen A can auto-populate it
+        if (invitationCode.trim()) {
+          localStorage.setItem('dash_pending_invite_code', invitationCode.trim().toUpperCase());
+        }
+
         // Controlled flow: Register a brand new user who will immediately bootstrap an organization
         const { error: signUpError } = await supabase.auth.signUp({
           email,
@@ -28,13 +48,14 @@ export const Login = () => {
           options: {
             data: {
               full_name: fullName,
+              invitation_code: invitationCode.trim().toUpperCase()
             },
           },
         });
 
         if (signUpError) throw signUpError;
         
-        setInfo('Organisation administrator account created successfully! Please sign in with your credentials to set up your organisation.');
+        setInfo('Account registered successfully! Please sign in with your email and password to complete organisation setup.');
         setIsRegisterOrg(false);
         setPassword('');
       } else {
@@ -87,10 +108,10 @@ export const Login = () => {
 
         {/* Info box for Controlled Registration */}
         {isRegisterOrg && (
-          <div className="p-3 bg-indigo-50 border border-indigo-100 rounded-lg flex items-start space-x-2.5 text-xs text-indigo-950">
-            <Building2 className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start space-x-2.5 text-xs text-amber-950">
+            <KeyRound className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <p className="leading-relaxed">
-              <strong>Organisation Setup:</strong> Creating an account here designates you as a tenant administrator. After signing in, you will be prompted to bootstrap your private organisation.
+              <strong>Invitation Required:</strong> Registration & tenant creation is restricted. You must provide a valid invitation code.
             </p>
           </div>
         )}
@@ -98,17 +119,37 @@ export const Login = () => {
         {/* Auth Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           {isRegisterOrg && (
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 block">Your Name (Admin)</label>
-              <input
-                type="text"
-                placeholder="John Doe"
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
-                className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all"
-                required
-              />
-            </div>
+            <>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">Invitation Code</label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="e.g. GXO-VIP-2026"
+                    value={invitationCode}
+                    onChange={(e) => setInvitationCode(e.target.value.toUpperCase())}
+                    className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm font-mono font-bold tracking-wider uppercase focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all"
+                    required={email.trim().toLowerCase() !== 'chris.jeal@gxo.com'}
+                  />
+                  <KeyRound className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  Contact chris.jeal@gxo.com to request a tenant registration code.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 block">Your Name (Admin)</label>
+                <input
+                  type="text"
+                  placeholder="John Doe"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  className="w-full px-3.5 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-transparent transition-all"
+                  required
+                />
+              </div>
+            </>
           )}
 
           <div className="space-y-1.5">

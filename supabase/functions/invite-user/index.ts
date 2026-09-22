@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
     }
 
     // 4. Parse Target Request Body
-    const { email: rawEmail, name: rawName, role } = await req.json();
+    const { email: rawEmail, name: rawName, role, customTempPassword } = await req.json();
     if (!rawEmail || !rawName || !role) {
       return new Response(
         JSON.stringify({ error: 'Parameters email, name, and role are required' }),
@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
         );
       } else {
         return new Response(
-          JSON.stringify({ error: 'This user is already associated with another organisation and cannot be invited.' }),
+          JSON.stringify({ error: 'This user is already associated with another organisation.' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
       }
@@ -200,28 +200,53 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Caller: ${callerUser.email} is inviting ${email} to tenant ${targetTenantId} as ${role}`);
+    // Helper to generate secure random temporary password if none supplied
+    const generateTempPassword = () => {
+      const uppercase = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+      const lowercase = 'abcdefghijkmnopqrstuvwxyz';
+      const numbers = '23456789';
+      const special = '!@#$%^&*';
+      let pass = '';
+      pass += uppercase.charAt(Math.floor(Math.random() * uppercase.length));
+      pass += lowercase.charAt(Math.floor(Math.random() * lowercase.length));
+      pass += numbers.charAt(Math.floor(Math.random() * numbers.length));
+      pass += special.charAt(Math.floor(Math.random() * special.length));
+      const all = uppercase + lowercase + numbers + special;
+      for (let i = 0; i < 8; i++) {
+        pass += all.charAt(Math.floor(Math.random() * all.length));
+      }
+      return pass.split('').sort(() => 0.5 - Math.random()).join('');
+    };
 
-    // 5. Invoke Supabase Admin Auth Invitation
-    const { data: inviteData, error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, {
-      data: {
+    const tempPassword = (customTempPassword && customTempPassword.trim().length >= 8)
+      ? customTempPassword.trim()
+      : generateTempPassword();
+
+    console.log(`Caller: ${callerUser.email} is provisioning ${email} in tenant ${targetTenantId} as ${role}`);
+
+    // 5. Create Auth user directly with temporary password and email confirmed
+    const { data: createData, error: createErr } = await adminClient.auth.admin.createUser({
+      email: email,
+      password: tempPassword,
+      email_confirm: true,
+      user_metadata: {
         full_name: name,
-        invited_by: callerUser.id
+        invited_by: callerUser.id,
+        must_change_password: true
       }
     });
 
-    if (inviteErr || !inviteData.user) {
+    if (createErr || !createData.user) {
       return new Response(
-        JSON.stringify({ error: `Supabase invitation failed: ${inviteErr?.message}` }),
+        JSON.stringify({ error: `User account creation failed: ${createErr?.message}` }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const targetUserId = inviteData.user.id;
+    const targetUserId = createData.user.id;
 
     try {
       // 6. Secure Database Provisioning (Updates profile and sets correct tenant_id inside DB)
-      // Note: Due to potential race conditions with trigger, we upsert safely.
       const { error: profileUpdateErr } = await adminClient
         .from('profiles')
         .upsert({
@@ -257,7 +282,7 @@ Deno.serve(async (req) => {
         .insert({
           tenant_id: targetTenantId,
           user_id: callerUser.id,
-          action: 'user.invite',
+          action: 'user.provision',
           target_type: 'profile',
           target_id: targetUserId,
           payload_after: {
@@ -273,20 +298,26 @@ Deno.serve(async (req) => {
       }
 
     } catch (dbErr: any) {
-      console.error(`Database provisioning failure. Rolling back invited auth user ${targetUserId}:`, dbErr.message);
+      console.error(`Database provisioning failure. Rolling back provisioned auth user ${targetUserId}:`, dbErr.message);
       // Rollback newly created Auth user to preserve atomic provisioning behavior
       await adminClient.auth.admin.deleteUser(targetUserId).catch((cleanErr) => {
         console.error(`Rollback cleanup failed to delete auth user ${targetUserId}:`, cleanErr.message);
       });
 
       return new Response(
-        JSON.stringify({ error: `Invitation failed during database provisioning: ${dbErr.message}` }),
+        JSON.stringify({ error: `Account provisioning failed during database setup: ${dbErr.message}` }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     return new Response(
-      JSON.stringify({ success: true, message: 'Invitation sent and user provisioned successfully', userId: targetUserId }),
+      JSON.stringify({
+        success: true,
+        message: 'Account provisioned successfully',
+        userId: targetUserId,
+        email: email,
+        tempPassword: tempPassword
+      }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

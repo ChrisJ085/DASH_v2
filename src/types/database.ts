@@ -85,3 +85,17 @@ export interface AuditLog {
   user_agent: string | null;
   created_at: string;
 }
+
+export interface TenantInvitationCode {
+  id: string;
+  code: string;
+  created_by_email: string;
+  max_uses: number;
+  times_used: number;
+  is_active: boolean;
+  expires_at: string | null;
+  notes: string | null;
+  created_at: string;
+  used_by_email: string | null;
+  used_at: string | null;
+}

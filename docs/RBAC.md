@@ -1,8 +1,8 @@
 # DASH V2 - Role-Based Access Control & Scope Architecture
 
 ## Document Control
-- **Phase:** Phase 0.1 (Architecture Corrections & Decisions)
-- **Status:** Approved Specification (Supersedes Phase 0 Baseline)
+- **Phase:** Phase 3 (Active RBAC) & Phase 5 (Mobile Observation Engine)
+- **Status:** Fully Implemented & Enforced
 - **Core Paradigm:** Strict Decoupling of Functional Capability (**WHAT**) from Operational Boundary (**WHERE**)
 
 ---

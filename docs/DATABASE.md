@@ -699,3 +699,31 @@ Immutable record of security-critical and configuration mutations.
 - **Reason:** Eliminates orphan ghost responses, saves disk space, and avoids ambiguous null-states.
 - **Deferred:** None.
 - **Implementation Implication (Phase 1):** The observation submission payload validator in Phase 1 / Phase 5 will filter out hidden questions before writing to `observation_responses`.
+
+---
+
+## 12. Migration History Log
+
+| Migration | Title | Purpose |
+|---|---|---|
+| `001_extensions.sql` | Core Extensions | Enables `pgcrypto` and mock auth schema |
+| `002_tenants_and_structure.sql` | Tenancy Structure | Creates `tenants`, `contracts`, `sites`, `contract_sites` |
+| `003_identity_and_profiles.sql` | User Profiles | Creates `profiles` linked 1:1 with Auth |
+| `004_rbac_and_scopes.sql` | RBAC & Scopes | Creates `roles`, `permissions`, `role_permissions`, `user_roles`, `user_contracts`, `user_sites` |
+| `005_tools_and_versions.sql` | Tools Engine | Creates `tools`, `tool_versions`, `tool_sections`, `tool_questions`, `question_options` |
+| `006_conditional_rules.sql` | Rules Engine | Creates `conditional_rules`, `rule_conditions` |
+| `007_templates.sql` | Catalog Templates | Creates `tool_templates` |
+| `008_observations.sql` | Observations Core | Creates `observations`, `observation_responses`, `observation_photos`, `observation_signatures` |
+| `009_audit.sql` | Audit Trail | Creates `audit_logs` |
+| `010_security_functions.sql` | Security Context | Creates `current_tenant_id()`, `has_permission()`, `has_operational_scope()` |
+| `011_rls.sql` | Row-Level Security | Enables RLS on all 24 tables with strict isolation policies |
+| `012_triggers_and_procedures.sql` | Triggers & RPCs | Immutability triggers and `tools_adopt_template` procedure |
+| `013_seed_data.sql` | Seed Registry | Canonical permissions and default roles |
+| `014_phase2_auth_tenancy.sql` | Auth & Profile Lifecycle | Profile trigger, escalation guard, `bootstrap_tenant()` |
+| `015_phase2_security_hardening.sql` | Security Hardening | Hardens `handle_new_user` and `bootstrap_tenant` execution rights |
+| `016_phase2_invitation_hardening.sql` | Invitation Safeguards | Strict role assignment boundaries during user invitations |
+| `017_phase2_rbac_alignment.sql` | RBAC Alignment | Align `assign_roles` and `assign_scopes` permissions with RLS |
+| `018_phase3_rbac_enforcement.sql` | Active RBAC Triggers | DB-level RBAC triggers, `get_user_authorization_state`, audit triggers |
+| `019_phase4_tool_builder.sql` | Tool Builder & Versioning | Clone version procedure `create_tool_version_draft` and publication validator |
+| `020_phase5_observation_engine.sql` | Mobile Observation Engine | Transactional `submit_observation` RPC, Storage bucket RLS policies, performance indexes |
+

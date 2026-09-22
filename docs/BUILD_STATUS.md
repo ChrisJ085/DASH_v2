@@ -6,6 +6,8 @@
 - **Phase 1 (Database & Supabase Foundation):** **COMPLETE**
 - **Phase 2 (Auth & Tenancy Core):** **COMPLETE**
 - **Phase 3 (Active RBAC & Scope Enforcement):** **COMPLETE**
+- **Phase 4 (Tool Builder & Versioning):** **COMPLETE**
+- **Phase 5 (Mobile Observation & Capture Engine):** **COMPLETE**
 
 ---
 

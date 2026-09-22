@@ -15,11 +15,17 @@ export interface Tool {
   status: ToolStatus;
   is_template?: boolean;
   origin_template_id?: string | null;
+  site_ids?: string[]; // Physical sites
+  area_ids?: string[];
+  operation_type_ids?: string[];
+  target_role_ids?: string[]; // Colleague operational roles this instrument applies to
   created_by: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
 }
+
+export * from './colleague';
 
 export interface ToolTemplate {
   id: string;
@@ -71,6 +77,32 @@ export type AnswerType =
   | 'signature'
   | 'rating';
 
+export interface SiteArea {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  name: string;
+  code: string;
+  description: string | null;
+  status: 'active' | 'inactive';
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface OperationType {
+  id: string;
+  tenant_id: string;
+  site_id: string;
+  name: string;
+  code: string;
+  description: string | null;
+  status: 'active' | 'inactive';
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
 export interface ToolQuestion {
   id: string;
   section_id: string;
@@ -82,6 +114,12 @@ export interface ToolQuestion {
   answer_type: AnswerType;
   is_required: boolean;
   order_index: number;
+  area_id?: string | null;
+  operation_type_id?: string | null;
+  site_ids?: string[];
+  area_ids?: string[];
+  operation_type_ids?: string[];
+  tool_ids?: string[];
   metadata: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -142,6 +180,8 @@ export interface Observation {
   tenant_id: string;
   contract_id: string;
   site_id: string;
+  area_id?: string | null;
+  operation_type_id?: string | null;
   tool_id: string;
   tool_version_id: string;
   observer_id: string;

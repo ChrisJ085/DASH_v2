@@ -185,6 +185,15 @@ BEGIN
         RETURN NEW;
     END IF;
 
+    -- ALLOW bootstrapping: if user has no roles, they can be assigned the 'tenant_admin' role
+    -- Check if user has no roles assigned
+    IF NOT EXISTS (SELECT 1 FROM public.user_roles WHERE user_id = v_caller_id) THEN
+        -- Verify it is the tenant_admin role
+        IF EXISTS (SELECT 1 FROM public.roles WHERE id = NEW.role_id AND code = 'tenant_admin') THEN
+            RETURN NEW;
+        END IF;
+    END IF;
+
     -- Ensure caller has users.assign_roles permission
     IF NOT public.has_permission('users.assign_roles') THEN
         RAISE EXCEPTION 'Security Exception: Insufficient permissions to assign user roles.';
