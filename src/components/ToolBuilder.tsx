@@ -38,6 +38,9 @@ import { BatchQuestionImportModal } from './BatchQuestionImportModal';
 import { MultiSelectEntityDropdown } from './MultiSelectEntityDropdown';
 import { AddQuestionsFromBankModal } from './AddQuestionsFromBankModal';
 import { CreateInstrumentModal } from './CreateInstrumentModal';
+import { enrichWithSites } from '../lib/site-area-utils';
+import { CustomScopeType } from '../types/custom-types';
+import { fetchTenantCustomTypes } from '../lib/custom-types-service';
 import {
   Tool,
   ToolVersion,
@@ -97,6 +100,8 @@ export default function ToolBuilder() {
   const [newToolAreaIds, setNewToolAreaIds] = useState<string[]>([]);
   const [newToolOpTypeIds, setNewToolOpTypeIds] = useState<string[]>([]);
   const [newToolTargetRoleIds, setNewToolTargetRoleIds] = useState<string[]>(['mhe_operator', 'machine_operator']);
+  const [newToolCustomScopeSelections, setNewToolCustomScopeSelections] = useState<Record<string, string[]>>({});
+  const [customTypes, setCustomTypes] = useState<CustomScopeType[]>([]);
   const [colleagueRoles, setColleagueRoles] = useState<ColleagueRole[]>(DEFAULT_COLLEAGUE_ROLES);
   const [sites, setSites] = useState<Site[]>([]);
 
@@ -150,16 +155,18 @@ export default function ToolBuilder() {
     if (!tenantId) return;
     const fetchAreasAndOps = async () => {
       try {
-        const [areasRes, opsRes, rolesData, sitesRes] = await Promise.all([
+        const [areasRes, opsRes, rolesData, sitesRes, tenantCustomTypes] = await Promise.all([
           supabase.from('site_areas').select('*').is('deleted_at', null).order('name'),
           supabase.from('operation_types').select('*').is('deleted_at', null).order('name'),
           fetchColleagueRoles(tenantId),
-          supabase.from('sites').select('*').is('deleted_at', null).order('name')
+          supabase.from('sites').select('*').is('deleted_at', null).order('name'),
+          fetchTenantCustomTypes(tenantId)
         ]);
-        if (areasRes.data) setSiteAreas(areasRes.data);
-        if (opsRes.data) setOperationTypes(opsRes.data);
+        if (areasRes.data) setSiteAreas(areasRes.data.map(a => enrichWithSites(a)));
+        if (opsRes.data) setOperationTypes(opsRes.data.map(o => enrichWithSites(o)));
         if (rolesData) setColleagueRoles(rolesData);
         if (sitesRes.data) setSites(sitesRes.data);
+        if (tenantCustomTypes) setCustomTypes(tenantCustomTypes);
       } catch (err) {
         console.error('Error fetching site areas/operation types:', err);
       }
@@ -1100,7 +1107,8 @@ export default function ToolBuilder() {
           status: 'draft',
           instructions: 'Fill out this gathering form accurately.',
           settings: {
-            target_role_ids: newToolTargetRoleIds
+            target_role_ids: newToolTargetRoleIds,
+            custom_scope_selections: newToolCustomScopeSelections
           }
         })
         .select()
@@ -1126,6 +1134,7 @@ export default function ToolBuilder() {
           site_ids: newToolSiteIds,
           area_ids: newToolAreaIds,
           operation_type_ids: newToolOpTypeIds,
+          custom_scope_selections: newToolCustomScopeSelections,
           target_role_ids: newToolTargetRoleIds
         }
       });
@@ -1136,6 +1145,7 @@ export default function ToolBuilder() {
       setNewToolSiteIds([]);
       setNewToolAreaIds([]);
       setNewToolOpTypeIds([]);
+      setNewToolCustomScopeSelections({});
       setNewToolTargetRoleIds(['mhe_operator', 'machine_operator']);
       setShowCreateTool(false);
     } catch (err) {
@@ -3535,6 +3545,9 @@ export default function ToolBuilder() {
           setOperationTypeIds={setNewToolOpTypeIds}
           targetRoleIds={newToolTargetRoleIds}
           setTargetRoleIds={setNewToolTargetRoleIds}
+          customScopeSelections={newToolCustomScopeSelections}
+          setCustomScopeSelections={setNewToolCustomScopeSelections}
+          customTypes={customTypes}
           sites={sites}
           siteAreas={siteAreas}
           operationTypes={operationTypes}

@@ -81,6 +81,8 @@ export interface SiteArea {
   id: string;
   tenant_id: string;
   site_id: string;
+  site_ids?: string[];
+  applies_to_all_sites?: boolean;
   name: string;
   code: string;
   description: string | null;
@@ -94,6 +96,8 @@ export interface OperationType {
   id: string;
   tenant_id: string;
   site_id: string;
+  site_ids?: string[];
+  applies_to_all_sites?: boolean;
   name: string;
   code: string;
   description: string | null;

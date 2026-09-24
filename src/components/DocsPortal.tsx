@@ -36,6 +36,7 @@ import ToolBuilder from './ToolBuilder';
 import ObservationRunner from './ObservationRunner';
 import ObservationList from './ObservationList';
 import { SiteAreaManager } from './SiteAreaManager';
+import { TenantCustomTypesManager } from './TenantCustomTypesManager';
 import ColleagueManager from './ColleagueManager';
 import InvitationCodeManager from './InvitationCodeManager';
 import { TenantDetailModal } from './TenantDetailModal';
@@ -1237,10 +1238,10 @@ export default function DocsPortal() {
 
             </div>
 
-            {/* Site Areas & Operation Types Management */}
+            {/* Tenant Custom Types & Scopes Management */}
             {sites.length > 0 && profile?.tenant_id && (
               <div className="col-span-1 lg:col-span-3 pt-2">
-                <SiteAreaManager
+                <TenantCustomTypesManager
                   tenantId={profile.tenant_id}
                   sites={sites}
                 />

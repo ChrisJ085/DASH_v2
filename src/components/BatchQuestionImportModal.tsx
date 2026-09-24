@@ -20,6 +20,7 @@ import {
 import { ToolQuestion, QuestionOption, AnswerType, Tool, SiteArea, OperationType } from '../types/tool-engine';
 import { Site } from '../types/database';
 import { MultiSelectEntityDropdown } from './MultiSelectEntityDropdown';
+import { enrichWithSites } from '../lib/site-area-utils';
 
 interface ParsedQuestionItem {
   id: string;
@@ -142,8 +143,8 @@ export const BatchQuestionImportModal: React.FC<BatchQuestionImportModalProps> =
           }
         }
         if (sitesRes.data) setSites(sitesRes.data);
-        if (areasRes.data) setSiteAreas(areasRes.data);
-        if (opsRes.data) setOperationTypes(opsRes.data);
+        if (areasRes.data) setSiteAreas(areasRes.data.map(a => enrichWithSites(a)));
+        if (opsRes.data) setOperationTypes(opsRes.data.map(o => enrichWithSites(o)));
       } catch (err) {
         console.error('Error loading entities for batch modal:', err);
       }

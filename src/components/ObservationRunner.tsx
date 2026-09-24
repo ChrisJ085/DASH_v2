@@ -32,6 +32,7 @@ import {
   evaluateToolVisibility,
   isAnswerEmpty
 } from '../lib/rule-evaluation';
+import { doesApplyToSite } from '../lib/site-area-utils';
 import SignatureCanvas from './SignatureCanvas';
 import {
   Layers,
@@ -118,12 +119,12 @@ export default function ObservationRunner({ onCancel, onComplete }: ObservationR
     const loadSiteContext = async () => {
       try {
         const [areasRes, opsRes] = await Promise.all([
-          supabase.from('site_areas').select('*').eq('site_id', selectedSiteId).is('deleted_at', null).order('name'),
-          supabase.from('operation_types').select('*').eq('site_id', selectedSiteId).is('deleted_at', null).order('name')
+          supabase.from('site_areas').select('*').is('deleted_at', null).order('name'),
+          supabase.from('operation_types').select('*').is('deleted_at', null).order('name')
         ]);
 
-        let availableAreas = areasRes.data || [];
-        let availableOps = opsRes.data || [];
+        let availableAreas = (areasRes.data || []).filter(a => doesApplyToSite(a, selectedSiteId));
+        let availableOps = (opsRes.data || []).filter(o => doesApplyToSite(o, selectedSiteId));
 
         // If the selected tool has configured site area restrictions, filter available areas
         if (selectedTool?.area_ids && selectedTool.area_ids.length > 0) {
